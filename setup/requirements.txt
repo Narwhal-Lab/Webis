@@ -1,0 +1,30 @@
+# Unified File Processor Dependencies
+
+# Basic dependencies
+pathlib
+
+# Crawler dependencies
+ddgs>=9.8.0  # DuckDuckGo search library (recommended to use new version)
+# duckduckgo-search  # Old version, renamed to ddgs, kept as alternative
+requests
+
+# Document processing (DocumentProcessor)
+langchain-community>=0.0.10
+docx2txt>=0.8
+
+# PDF processing (PDFProcessor) 
+pypdf>=3.0.0
+
+# Image OCR processing (ImageProcessor)
+easyocr>=1.7.0
+torch>=1.9.0
+torchvision>=0.10.0
+
+# HTML processing (HTMLProcessor)
+webis-html
+
+# Optional: Other OCR choices (commented out, uncomment as needed)
+# paddleocr>=2.7.0
+# paddlepaddle>=2.5.0
+# pytesseract>=0.3.10
+# Pillow>=8.0.0
