@@ -1,4 +1,4 @@
-# Webis - Multimodal Data Cleaning Tool User Manual
+# Webis - Multimodal Data Extraction Framework
 
 [English](README.md) | [中文](README_CN.md)
 
