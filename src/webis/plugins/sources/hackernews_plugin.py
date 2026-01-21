@@ -1,5 +1,6 @@
 """
-Hacker News Source Plugin for Webis.
+HackerNews Source Plugin for Webis (Enhanced version).
+Based on student implementation - downloads complete article content.
 """
 
 import logging
@@ -12,63 +13,78 @@ from webis.core.schema import WebisDocument, DocumentType, DocumentMetadata, Pip
 
 logger = logging.getLogger(__name__)
 
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "Accept-Language": "en-US,en;q=0.9"
+}
+
 
 class HackerNewsPlugin(SourcePlugin):
     """
-    Fetch top stories from Hacker News.
+    Search HackerNews and download complete article content.
+    Uses Algolia HN Search API.
     """
-    
+
     name = "hackernews"
-    description = "Fetch top stories from Hacker News"
-    
+    description = "Search HackerNews stories and download full article content"
+
     def fetch(
-        self, 
-        query: str, # Query is ignored for HN top stories, or could be used to filter
-        limit: int = 10, 
+        self,
+        query: str,
+        limit: int = 10,
         context: Optional[PipelineContext] = None,
         **kwargs
     ) -> Iterator[WebisDocument]:
-        
+
+        logger.info(f"[HackerNews] Searching: {query}")
+
+        url = f"https://hn.algolia.com/api/v1/search?query={query}&tags=story&hitsPerPage={limit}"
+
         try:
-            # 1. Get top stories IDs
-            resp = requests.get(
-                "https://hacker-news.firebaseio.com/v0/topstories.json",
-                timeout=20
-            )
+            resp = requests.get(url, timeout=10)
             resp.raise_for_status()
-            ids = resp.json()[:limit]
-            
-            # 2. Fetch details for each story
-            for item_id in ids:
-                item_resp = requests.get(
-                    f"https://hacker-news.firebaseio.com/v0/item/{item_id}.json",
-                    timeout=10
-                )
-                if not item_resp.ok:
+            hits = resp.json().get('hits', [])
+
+            for hit in hits:
+                link = hit.get('url')
+                title = hit.get('title')
+                hn_id = hit.get('objectID')
+                points = hit.get('points', 0)
+                author = hit.get('author', '')
+
+                if not link or not title:
                     continue
-                    
-                item = item_resp.json()
-                url = item.get("url")
-                
-                # If no URL (e.g. Ask HN), use the HN item link
-                if not url:
-                    url = f"https://news.ycombinator.com/item?id={item_id}"
-                
+
+                # Download the actual article
+                content = self._fetch_page(link)
+
                 yield WebisDocument(
-                    content="", # Content to be fetched by processor
+                    content=content,
                     doc_type=DocumentType.HTML,
                     meta=DocumentMetadata(
-                        url=url,
-                        title=item.get("title"),
-                        published_at=item.get("time"), # Need conversion
+                        url=link,
+                        title=title,
                         source_plugin=self.name,
                         custom={
-                            "score": item.get("score"),
-                            "by": item.get("by"),
-                            "type": item.get("type")
+                            "hn_id": hn_id,
+                            "points": points,
+                            "author": author,
+                            "hn_comments_url": f"https://news.ycombinator.com/item?id={hn_id}"
                         }
                     )
                 )
-                
+
         except Exception as e:
-            logger.error(f"Hacker News fetch failed: {e}")
+            logger.error(f"[HackerNews] Search failed: {e}")
+
+    def _fetch_page(self, url: str) -> str:
+        """Download HTML content from URL."""
+        try:
+            r = requests.get(url, headers=HEADERS, timeout=15)
+            r.raise_for_status()
+            r.encoding = r.apparent_encoding
+            return r.text
+
+        except Exception as e:
+            logger.warning(f"[HackerNews] Failed to fetch {url}: {e}")
+            return ""

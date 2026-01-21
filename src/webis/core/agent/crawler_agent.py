@@ -36,12 +36,14 @@ class CrawlerAgent:
     ):
         self.router = router or get_default_router()
         self.registry = registry or get_default_registry()
+        self.last_used_tools: List[str] = []
         
     def run(
         self, 
         task: str, 
         limit: int = 10, 
-        context: Optional[PipelineContext] = None
+        context: Optional[PipelineContext] = None,
+        excluded_tools: Optional[List[str]] = None
     ) -> List[WebisDocument]:
         """
         Execute the crawling task.
@@ -50,15 +52,26 @@ class CrawlerAgent:
             task: Natural language task description
             limit: Maximum items to fetch
             context: Pipeline context
+            excluded_tools: List of tool names to avoid (e.g. failed previously)
             
         Returns:
             List of fetched documents
         """
         # 1. Get available tools
-        sources = self.registry.list_sources()
-        if not sources:
+        all_sources = self.registry.list_sources()
+        if not all_sources:
             logger.warning("No source plugins registered!")
             return []
+            
+        # Filter excluded tools
+        excluded_tools = excluded_tools or []
+        sources = [s for s in all_sources if s not in excluded_tools]
+        
+        if not sources:
+            logger.warning(f"All sources excluded or unavailable! (Excluded: {excluded_tools})")
+            # If all excluded, reset and try all
+            sources = all_sources
+            logger.info("Resetting exclusions to allow retry.")
             
         source_descriptions = []
         for name in sources:
@@ -78,12 +91,15 @@ class CrawlerAgent:
         Available Tools:
         {tools_prompt}
         
+        Excluded Tools (do not use): {excluded_tools}
+        
         User Task: "{task}"
         
         Analyze the task. Select up to 3 best tools in order of priority.
         - If it's about code, prioritize GitHub.
         - If it's about news, prioritize GNews.
         - If general, prioritize search engines (Google/DuckDuckGo).
+        - IMPORTANT: Do NOT select any tool listed in "Excluded Tools".
         
         Return a JSON object with:
         - "plan": A list of tool execution steps. Each step has:
@@ -136,6 +152,7 @@ class CrawlerAgent:
 
         # 4. Execute plan until limit met
         all_docs = []
+        self.last_used_tools = [step['tool'] for step in plan]
         
         for step in plan:
             if len(all_docs) >= limit:

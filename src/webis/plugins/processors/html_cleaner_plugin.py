@@ -1,33 +1,28 @@
 """
 HTML Cleaner Processor Plugin for WebIS
 
-Final merged version:
-- DOM block-level extraction (no webis_html dependency)
-- Deterministic main-content selection (distilled rules)
-- Integrated encoding-fix & noise-reduction utilities
+LLM-based approach:
+- Extract all visible text from HTML
+- Use LLM to identify and extract main content
+- No fallback - fails if LLM fails
 """
 
+import json
 import logging
 import re
-from typing import Optional, List
+from typing import Optional
 
 from bs4 import BeautifulSoup
 
 from webis.core.plugin import ProcessorPlugin
 from webis.core.schema import WebisDocument, PipelineContext
+from webis.core.llm.base import get_default_router
 
 logger = logging.getLogger(__name__)
 
 
-def basic_noise_reduction(text: str) -> str:
-    text = re.sub(r"\r\n|\r|\n", "\n", text)
-    text = re.sub(r"\s+", " ", text)
-    lines = [line.strip() for line in text.split("\n")]
-    lines = [line for line in lines if len(line) >= 3]
-    return "\n\n".join(lines).strip()
-
-
 def maybe_fix_mojibake(text: str) -> str:
+    """Fix potential UTF-8 encoding issues."""
     if not text:
         return text
 
@@ -51,13 +46,18 @@ def maybe_fix_mojibake(text: str) -> str:
 
 class HTMLCleanerPlugin(ProcessorPlugin):
     """
-    Deterministic HTML cleaner for WebIS pipeline.
+    LLM-driven HTML cleaner for WebIS pipeline.
+    
+    Extracts visible text from HTML and uses LLM to identify main content.
     """
 
     name = "html_cleaner"
     input_type = "html"
     output_type = "text"
 
+    def __init__(self):
+        super().__init__()
+        self._llm_router = None
 
     def process(
         self,
@@ -72,65 +72,99 @@ class HTMLCleanerPlugin(ProcessorPlugin):
         try:
             soup = BeautifulSoup(doc.content, "html.parser")
 
-            for tag in soup(["script", "style", "nav", "footer", "header", "aside"]):
+            # Remove script, style, and other non-content tags
+            for tag in soup(["script", "style", "noscript"]):
                 tag.decompose()
 
-            blocks = self._extract_blocks(soup)
+            # Extract all visible text
+            page_text = soup.get_text(separator="\n", strip=True)
+            
+            # Apply mojibake fix
+            page_text = maybe_fix_mojibake(page_text)
 
-            texts: List[str] = []
-            for block in blocks:
-                if self._is_main_content_block(block):
-                    texts.append(block["text"])
+            # Use LLM to clean text
+            if not page_text:
+                logger.warning(f"[HTMLCleanerPlugin] No text extracted from {doc.id}")
+                return doc
 
-            raw_text = "\n".join(texts)
-
-            raw_text = maybe_fix_mojibake(raw_text)
-            clean_text = basic_noise_reduction(raw_text)
-
-            doc.clean_content = clean_text
-            doc.add_processing_step(self.name)
+            clean_text = self._llm_clean(page_text)
+            
+            if clean_text:
+                doc.clean_content = clean_text
+                doc.add_processing_step(self.name)
+                logger.info(f"[HTMLCleanerPlugin] Successfully cleaned {doc.id}, extracted {len(clean_text)} chars")
+            else:
+                logger.error(f"[HTMLCleanerPlugin] LLM cleaning failed for {doc.id}")
+            
             return doc
 
         except Exception as e:
             logger.error(f"[HTMLCleanerPlugin] failed for {doc.id}: {e}")
             return doc
 
-    def _extract_blocks(self, soup: BeautifulSoup) -> List[dict]:
-        blocks: List[dict] = []
+    def _build_cleaning_prompt(self, page_text: str) -> tuple[str, str]:
+        """
+        Build LLM prompt for main content extraction.
+        Similar to swde_llm_labeled.py build_prompt().
+        """
+        system = (
+            "You are annotating web pages for main-content extraction. Your job is to read the provided visible text of a page "
+            "and extract the primary body content."
+        )
+        system += (
+            " Main content includes the body of an article or the key description of a product, job, school, movie, etc."
+            " Do NOT return navigation menus, breadcrumbs, header/footer text, ads, login/registration prompts, recommendations or related links,"
+            " site search boxes, copyright notices, comments (unless comments are the main content), social sharing buttons,"
+            " cookie banners, empty strings, or repeated template text."
+        )
+        
+        user = (
+            "The following is the page's visible text (scripts/styles removed). It is plain text with blocks concatenated in reading order.\n"
+            "Respond with STRICT JSON containing:\n"
+            '- "main_text": the extracted primary content as a single string (preserve original order, separate paragraphs with \\n\\n if needed)\n'
+            '- "reason": 1-2 sentence justification\n\n'
+            "Page text:\n\n"
+            f"{page_text[:8000]}\n"  # Limit text to avoid token limits
+        )
+        
+        return system, user
 
-        for elem in soup.find_all(["p", "section", "article", "div", "table"]):
-            text = elem.get_text(strip=True)
-            if not text:
-                continue
+    def _llm_clean(self, page_text: str) -> Optional[str]:
+        """Use LLM to extract main content from page text."""
+        if self._llm_router is None:
+            self._llm_router = get_default_router()
 
-            text_len = len(text)
-            link_text_len = sum(len(a.get_text(strip=True)) for a in elem.find_all("a"))
-            link_density = link_text_len / max(text_len, 1)
+        system, user = self._build_cleaning_prompt(page_text)
+        
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
 
-            blocks.append({
-                "tag": elem.name,
-                "text": text,
-                "text_len": text_len,
-                "link_density": link_density,
-            })
+        # Call LLM
+        response = self._llm_router.chat(messages, temperature=0.0, max_tokens=4096)
+        
+        if not response.content:
+            logger.warning("[HTMLCleanerPlugin] LLM returned empty response")
+            return None
 
-        return blocks
-
-    def _is_main_content_block(self, block: dict) -> bool:
-        tag = block["tag"]
-        text_len = block["text_len"]
-        link_density = block["link_density"]
-
-        if tag in {"nav", "footer", "aside", "header"}:
-            return False
-
-        if text_len < 30:
-            return False
-
-        if text_len >= 80 and link_density <= 0.2:
-            return True
-
-        if tag in {"table", "section", "article"} and text_len >= 50:
-            return True
-
-        return False
+        # Parse JSON response
+        try:
+            result = json.loads(response.content)
+            main_text = result.get("main_text", "").strip()
+            
+            if main_text:
+                logger.debug(f"[HTMLCleanerPlugin] LLM extracted {len(main_text)} chars. Reason: {result.get('reason', 'N/A')}")
+                return main_text
+            else:
+                logger.warning("[HTMLCleanerPlugin] LLM returned empty main_text")
+                return None
+            
+        except json.JSONDecodeError as e:
+            logger.warning(f"[HTMLCleanerPlugin] Failed to parse LLM response as JSON: {e}")
+            # Try to use raw content if JSON parsing fails but response looks reasonable
+            content = response.content.strip()
+            if content and len(content) > 50:
+                logger.info("[HTMLCleanerPlugin] Using raw LLM response as fallback")
+                return content
+            return None

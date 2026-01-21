@@ -83,80 +83,80 @@ def main():
         parser.print_help()
 
 def cmd_run(task: str, limit: int, output_dir: str = None):
-    logger.info(f"Starting Webis Pipeline for: {task}")
+    logger.info(f"🚀 Starting Intelligent Pipeline for: {task}")
     
-    # 1. Source (Crawler Agent)
-    logger.info("Phase 1: Sourcing...")
-    agent = CrawlerAgent()
-    docs = agent.run(task, limit=limit)
+    # Phase 1: Intelligent Crawling with validation
+    logger.info("Phase 1: Intelligent Sourcing with Agent Validation...")
+    
+    from webis.core.intelligent_pipeline import IntelligentPipeline
+    
+    pipeline = IntelligentPipeline()
+    validation_result = pipeline.run(
+        query=task,
+        requirements={
+            'min_count': limit,
+            'relevance_threshold': 0.7,
+            'max_iterations': 3
+        }
+    )
+    
+    # Get validated documents
+    docs = validation_result['documents']
     
     if not docs:
-        logger.error("No documents found.")
+        logger.error("No documents found after Agent validation.")
+        logger.info("Try: 1) Checking API keys, 2) Adjusting relevance threshold, 3) Increasing iterations")
         return
-
-    logger.info(f"Fetched {len(docs)} documents.")
-
-    # 2. Pipeline (Processing + Extraction)
-    logger.info("Phase 2: Processing & Extraction...")
     
-    pipeline = Pipeline()
-    
-    # Add processors to clean/parse content
-    # Note: Pipeline.run() typically runs source stages too. 
-    # But here we inject docs directly. 
-    # We will manually construct the pipeline flow or modify Pipeline to accept docs.
-    # For CLI simplicity, we can use Pipeline's processor runner if we expose it, 
-    # or just use plugins directly.
-    # Let's use Pipeline proper by configuring it without sources, 
-    # but Pipeline.run() doesn't take docs.
-    # Refactoring: Let's use the registry directly for flexibility in CLI script.
+    stats = validation_result['stats']
+    logger.info(f"✓ Got {stats['accepted_count']} validated documents")
+    logger.info(f"  Rejected {stats['rejected_count']} irrelevant documents")
+    logger.info(f"  Completed in {stats['iterations']} iteration(s)")
+
+    # Phase 2: Processing (Additional)
+    # Note: IntelligentPipeline already runs HTMLCleanerPlugin.
+    # We only need to run parsers for specific file types if they weren't fully processed.
+    logger.info("Phase 2: Additional Processing...")
     
     registry = get_default_registry()
-    
-    # Auto-detect processors needed?
-    # For v2 default pipeline:
-    # - HTML Fetcher (if content empty)
-    # - HTML Cleaner
-    # - PDF/Doc Parser
+    context = PipelineContext(task=task, output_dir=output_dir)
     
     processed_docs = []
     
     # Helper to run processors
-    html_fetcher = registry.get_processor("html_fetcher")
-    html_cleaner = registry.get_processor("html_cleaner")
     pdf_parser = registry.get_processor("pdf_extractor")
     doc_parser = registry.get_processor("document_parser")
 
-    context = PipelineContext(task=task, output_dir=output_dir)
-
     for doc in docs:
-        # Fetch if needed
-        if html_fetcher:
-            doc = html_fetcher.process(doc, context) or doc
-
-        # Parse/Clean based on type
-        if doc.doc_type == DocumentType.PDF and pdf_parser:
+        # If PDF and raw content needs parsing
+        if doc.doc_type == DocumentType.PDF and pdf_parser and not doc.clean_content:
              doc = pdf_parser.process(doc, context) or doc
-        elif doc.doc_type in (DocumentType.HTML, DocumentType.UNKNOWN) and html_cleaner:
-             doc = html_cleaner.process(doc, context) or doc
-        
-        # Try doc parser for others
-        if doc_parser:
+        # If generic doc parser needed and still raw
+        elif doc_parser and not doc.clean_content:
              doc = doc_parser.process(doc, context) or doc
-             
+              
         processed_docs.append(doc)
 
-    # 3. Extraction
-    logger.info("Phase 3: Extraction...")
+    logger.info(f"✓ Processed {len(processed_docs)} documents")
+
+    # Phase 3: Extraction
+    logger.info("Phase 3: LLM Structural Extraction...")
     extractor = registry.get_extractor("llm_extractor")
+    
+    extraction_result = None
     if extractor:
-        result = extractor.extract(processed_docs, context)
+        extraction_result = extractor.extract(processed_docs, context)
         
-        print("\n=== Extraction Result ===")
-        print(json.dumps(result.data, indent=2, ensure_ascii=False))
+        print("\n" + "="*70)
+        print("EXTRACTION RESULT")
+        print("="*70)
+        print(json.dumps(extraction_result.data, indent=2, ensure_ascii=False))
         
-    # 4. Reporting (Phase 4)
-    logger.info("Phase 4: Reporting...")
+    else:
+        logger.warning("LLM Extractor not found. Skipping extraction.")
+        
+    # Phase 4: Reporting
+    logger.info("Phase 4: Generating Report...")
     
     # Determine output directory (Auto-save)
     if not output_dir:
@@ -166,16 +166,24 @@ def cmd_run(task: str, limit: int, output_dir: str = None):
         
     os.makedirs(output_dir, exist_ok=True)
 
-    if extractor and 'result' in locals():
+    # Save Full Documents (Raw & Cleaned)
+    if processed_docs:
+        docs_path = os.path.join(output_dir, "documents.json")
+        docs_data = [doc.model_dump(mode="json") for doc in processed_docs]
+        with open(docs_path, "w") as f:
+            json.dump(docs_data, f, indent=2, ensure_ascii=False)
+        logger.info(f"📁 Raw/Cleaned data saved to: {docs_path}")
+
+    if extraction_result:
         # Save JSON
         json_path = os.path.join(output_dir, "result.json")
         with open(json_path, "w") as f:
-            f.write(json.dumps(result.model_dump(mode="json"), indent=2, ensure_ascii=False))
+            f.write(json.dumps(extraction_result.model_dump(mode="json"), indent=2, ensure_ascii=False))
         
         # Generate HTML Report
         html_plugin = registry.get_output("html_report")
         if html_plugin:
-            html_plugin.save(result, context=context, output_dir=output_dir, documents=processed_docs)
+            html_plugin.save(extraction_result, context=context, output_dir=output_dir, documents=processed_docs)
             print(f"\n✨ Report generated: {os.path.join(output_dir, 'report.html')}")
             print(f"📁 JSON saved to:   {json_path}")
         else:
@@ -204,13 +212,6 @@ def cmd_extract(files: List[str], task: str, schema_path: str = None, output_fil
         with open(schema_path) as f:
             config["schema"] = json.load(f)
             
-    # Re-init extractor with config if needed, or pass in kwargs
-    # Plugins act as singletons in registry usually, but `extract` takes kwargs.
-    # LLMExtractorPlugin uses `self.schema` from init. 
-    # We should probably instantiate a new one or pass schema in kwargs (if plugin supports it).
-    # Current implementation supports `self.schema`. Let's assume kwargs support or re-register.
-    # For now, simplistic approach:
-    
     if schema_path:
          # Create a temporary instance with config
          from webis.plugins.extractors.llm_extractor_plugin import LLMExtractorPlugin
