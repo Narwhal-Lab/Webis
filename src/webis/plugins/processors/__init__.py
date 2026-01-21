@@ -1,7 +1,7 @@
-from .html_cleaner_plugin import HtmlCleanerPlugin
+from .html_cleaner_plugin import HTMLCleanerPlugin
 from .html_fetcher_plugin import HtmlFetcherPlugin
 from .video_plugin import VideoPlugin
-from .pdf_plugin import PDFPlugin
+from .pdf_plugin_v2 import PDFPluginV2
 from .document_parse_plugin import DocumentParsePlugin
 
 __all__ = [
@@ -16,8 +16,8 @@ __all__ = [
 from webis.core.plugin import get_default_registry
 
 registry = get_default_registry()
-registry.register(HtmlCleanerPlugin())
+registry.register(HTMLCleanerPlugin())
 registry.register(HtmlFetcherPlugin())
 registry.register(VideoPlugin())
-registry.register(PDFPlugin())
+registry.register(PDFPluginV2())
 registry.register(DocumentParsePlugin())
