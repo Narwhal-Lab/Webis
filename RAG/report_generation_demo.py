@@ -59,7 +59,7 @@ def demo_1_concise_report():
         min_score_threshold=0.4,
     )
     
-    query = "tell me the recent development of artificial intelligence"
+    query = "tell me the recent development of American technology industry"
     print(f"\n📌 查询: {query}\n")
     
     # Get context

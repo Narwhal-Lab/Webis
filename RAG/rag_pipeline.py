@@ -241,7 +241,10 @@ class RAGPipeline:
     
     def _fetch_from_webis(self, query: str) -> bool:
         """
-        Fetch documents from webis pipeline when retrieval results are insufficient.
+        Fetch documents from webis pipeline using IntelligentPipeline when retrieval results are insufficient.
+        
+        Uses the new webis v2 API with CrawlerAgent for intelligent tool selection and ValidationAgent
+        for relevance validation.
         
         Args:
             query: Query text for webis search
@@ -250,100 +253,95 @@ class RAGPipeline:
             True if documents were fetched and stored, False otherwise
         """
         try:
-            print(f"\n⚠️  Insufficient documents in RAG )")
-            print(f"📡 Fetching from webis pipeline for query: '{query}'...\n")
+            print(f"\n⚠️  Insufficient documents in RAG")
+            print(f"📡 Fetching from webis using IntelligentPipeline for query: '{query}'...\n")
             
-            from webis.core.pipeline import Pipeline
-        except ImportError:
-            logger.warning("Webis pipeline not available, skipping fetch")
+            from webis.core.intelligent_pipeline import IntelligentPipeline
+            from webis.core.schema import PipelineContext
+        except ImportError as e:
+            logger.warning(f"Webis IntelligentPipeline not available: {e}")
             return False
         
         try:
-            # Initialize webis pipeline
-            pipe = Pipeline()
+            context = PipelineContext(
+            task=query  # 直接将查询作为 task
+            )
+            # Initialize intelligent pipeline with agent-based validation
+            pipeline = IntelligentPipeline()
             
-            # Register plugins
-            try:
-                from webis.plugins.sources import DuckDuckGoPlugin
-                from webis.plugins.processors import (
-                    HtmlFetcherPlugin,
-                    HtmlCleanerPlugin,
-                )
-                from webis.plugins.extractors import LLMExtractorPlugin
-                
-                registry = pipe.registry
-                try:
-                    registry.register_class(DuckDuckGoPlugin)
-                except:
-                    pass
-                try:
-                    registry.register_class(HtmlFetcherPlugin)
-                except:
-                    pass
-                try:
-                    registry.register_class(HtmlCleanerPlugin)
-                except:
-                    pass
-                try:
-                    registry.register_class(LLMExtractorPlugin)
-                except:
-                    pass
-            except Exception as e:
-                logger.warning(f"Some plugins unavailable: {e}")
+            # Define requirements for document fetching
+            requirements = {
+                'min_count': 5,  # Fetch at least 5 documents
+                'relevance_threshold': 0.6,  # Relevance score threshold
+                'max_iterations': 2,  # Maximum crawl attempts
+            }
             
-            # Build pipeline
-            pipe.add_source("duckduckgo", max_results=5)
-            pipe.add_processor("html_fetcher")
-            pipe.add_processor("html_cleaner")
-            pipe.add_extractor("llm_extractor", config={
-                "output_format": "json",
-                "schema": {
-                    "title": "string",
-                    "key_points": ["string"],
-                    "summary": "string"
-                }
-            })
+            # Run intelligent pipeline with automatic re-crawling based on validation
+            result = pipeline.run(
+                query=query,
+                requirements=requirements,
+                context=context
+            )
             
-            # Run pipeline
-            result = pipe.run(query)
+            documents = result.get("documents", [])
+            stats = result.get("stats", {})
             
-            if not result or not result.documents:
-                logger.warning("Webis returned no documents")
+            if not documents:
+                logger.warning("Webis IntelligentPipeline returned no documents")
                 return False
             
-            print(f"✓ Webis fetched {result.document_count} documents\n")
+            print(f"\n✓ Webis fetched {len(documents)} validated documents")
+            print(f"   Accepted: {stats.get('accepted_count', 0)}")
+            print(f"   Rejected: {stats.get('rejected_count', 0)}")
+            print(f"   Iterations: {stats.get('iterations', 0)}\n")
             
-            # Process webis results
-            documents = []
-            for doc in result.documents:
+            # Convert WebisDocument objects to RAG format
+            rag_documents = []
+            for doc in documents:
+                # Extract content - use clean_content if available, fallback to content
                 clean_content = getattr(doc, "clean_content", None) or getattr(doc, "content", "")
-                if clean_content and clean_content.strip():
-                    documents.append({
-                        "content": clean_content,
-                        "source": getattr(doc.meta, "url", None) or getattr(doc.meta, "title", "unknown"),
-                        "title": getattr(doc.meta, "title", ""),
-                        "structured_data": None,
-                        "metadata": {
-                            "from_webis": True,
-                            "timestamp": datetime.now().isoformat(),
-                        }
-                    })
-            
-            if documents:
-                # Process and store documents
-                print(f"Processing and storing {len(documents)} documents to RAG...\n")
-                result = self.process_and_store_documents(documents, query=query)
                 
-                print(f"✓ Stored {result['processed_count']} documents")
-                print(f"✓ Generated {result['chunk_count']} chunks")
-                print(f"✓ Generated {result['embedding_count']} embeddings\n")
+                if not clean_content or not clean_content.strip():
+                    logger.debug(f"Skipping document with empty content")
+                    continue
+                
+                # Extract metadata
+                source = "unknown"
+                title = ""
+                
+                if hasattr(doc, "meta") and doc.meta:
+                    source = getattr(doc.meta, "url", None) or getattr(doc.meta, "title", "unknown")
+                    title = getattr(doc.meta, "title", "")
+                
+                rag_documents.append({
+                    "content": clean_content,
+                    "source": source,
+                    "title": title,
+                    "structured_data": None,
+                    "metadata": {
+                        "from_webis": True,
+                        "webis_validation_score": getattr(doc, "validation_score", 0.0),
+                        "source_plugin": getattr(doc.meta, "source_plugin", "unknown") if hasattr(doc, "meta") and doc.meta else "unknown",
+                        "timestamp": datetime.now().isoformat(),
+                    }
+                })
+            
+            if rag_documents:
+                # Process and store documents to RAG
+                print(f"Processing and storing {len(rag_documents)} documents to RAG...\n")
+                
+                store_result = self.process_and_store_documents(rag_documents, query=query)
+                
+                print(f"✓ Stored {store_result['processed_count']} documents")
+                print(f"✓ Generated {store_result['chunk_count']} chunks")
+                print(f"✓ Generated {store_result['embedding_count']} embeddings\n")
                 
                 return True
             
             return False
             
         except Exception as e:
-            logger.warning(f"Failed to fetch from webis: {e}")
+            logger.error(f"Failed to fetch from webis IntelligentPipeline: {e}", exc_info=True)
             return False
     
     def _should_fetch_webis(self, retrieval_result: Dict[str, Any]) -> bool:
