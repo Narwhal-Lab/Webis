@@ -14,7 +14,7 @@ Features:
 - Multiple demonstration scenarios
 
 Run:
-  python RAG/demo_improved_report.py
+  python RAG/report_generation_demo.py
 """
 from __future__ import annotations
 

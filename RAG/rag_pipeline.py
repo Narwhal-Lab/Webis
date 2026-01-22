@@ -242,77 +242,131 @@ class RAGPipeline:
     def _fetch_from_webis(self, query: str) -> bool:
         """
         Fetch documents from webis pipeline using IntelligentPipeline when retrieval results are insufficient.
-        
-        Uses the new webis v2 API with CrawlerAgent for intelligent tool selection and ValidationAgent
-        for relevance validation.
-        
-        Args:
-            query: Query text for webis search
-            
-        Returns:
-            True if documents were fetched and stored, False otherwise
+        Updated to support newer webis plugin APIs while remaining backward compatible.
         """
         try:
             print(f"\n⚠️  Insufficient documents in RAG")
-            print(f"📡 Fetching from webis using IntelligentPipeline for query: '{query}'...\n")
-            
-            from webis.core.intelligent_pipeline import IntelligentPipeline
-            from webis.core.schema import PipelineContext
+            print(f"📡 Fetching from webis for query: '{query}'...\n")
+            import webis as webis_mod
         except ImportError as e:
-            logger.warning(f"Webis IntelligentPipeline not available: {e}")
+            logger.warning(f"Webis not available: {e}")
             return False
-        
+
+        # default context/requirements
         try:
-            context = PipelineContext(
-            task=query  # 直接将查询作为 task
-            )
-            # Initialize intelligent pipeline with agent-based validation
-            pipeline = IntelligentPipeline()
-            
-            # Define requirements for document fetching
-            requirements = {
-                'min_count': 5,  # Fetch at least 5 documents
-                'relevance_threshold': 0.6,  # Relevance score threshold
-                'max_iterations': 2,  # Maximum crawl attempts
-            }
-            
-            # Run intelligent pipeline with automatic re-crawling based on validation
-            result = pipeline.run(
-                query=query,
-                requirements=requirements,
-                context=context
-            )
-            
-            documents = result.get("documents", [])
-            stats = result.get("stats", {})
-            
+            # try to build a context if available
+            PipelineContext = getattr(webis_mod, "PipelineContext", None)
+            context = PipelineContext(task=query) if PipelineContext else None
+        except Exception:
+            context = None
+
+        requirements = {
+            "min_count": 5,
+            "relevance_threshold": 0.6,
+            "max_iterations": 2,
+        }
+
+        try:
+            result = None
+
+            # 1) 优先：IntelligentPipeline (旧/新位置都尝试)
+            PipelineCls = None
+            if hasattr(webis_mod, "IntelligentPipeline"):
+                PipelineCls = getattr(webis_mod, "IntelligentPipeline")
+            elif hasattr(webis_mod, "pipeline") and hasattr(webis_mod.pipeline, "IntelligentPipeline"):
+                PipelineCls = getattr(webis_mod.pipeline, "IntelligentPipeline")
+
+            if PipelineCls:
+                pipeline = PipelineCls()
+                # 兼容不同 run 签名：优先传 dict 风格，失败则尝试简单调用
+                try:
+                    result = pipeline.run(query=query, requirements=requirements, context=context)
+                except TypeError:
+                    result = pipeline.run(query, requirements, context)
+            else:
+                # 2) 尝试 Client 风格或模块级 fetch 接口
+                client = None
+                if hasattr(webis_mod, "Client"):
+                    client = getattr(webis_mod, "Client")()
+                elif hasattr(webis_mod, "WebisClient"):
+                    client = getattr(webis_mod, "WebisClient")()
+                # 模块级 fetch/search 函数
+                if client:
+                    if hasattr(client, "fetch_documents"):
+                        result = client.fetch_documents(query=query, min_count=requirements["min_count"], relevance_threshold=requirements["relevance_threshold"])
+                    elif hasattr(client, "search"):
+                        # search 可能返回 list 或 dict
+                        try:
+                            result = client.search(query=query, limit=requirements["min_count"])
+                        except TypeError:
+                            result = client.search(query)
+                    elif hasattr(client, "crawl"):
+                        result = client.crawl(query=query, max_iterations=requirements["max_iterations"])
+                    else:
+                        logger.warning("Unsupported webis Client API")
+                        return False
+                else:
+                    # 尝试模块级接口
+                    if hasattr(webis_mod, "fetch_documents"):
+                        result = webis_mod.fetch_documents(query=query, **requirements)
+                    elif hasattr(webis_mod, "search"):
+                        try:
+                            result = webis_mod.search(query=query, limit=requirements["min_count"])
+                        except TypeError:
+                            result = webis_mod.search(query)
+                    else:
+                        logger.warning("No supported webis API found in module")
+                        return False
+
+            # 规范化返回值 -> documents (list) 和 stats (dict)
+            documents = []
+            stats = {}
+            if isinstance(result, dict):
+                documents = result.get("documents") or result.get("docs") or result.get("results") or []
+                stats = result.get("stats", {})
+            elif isinstance(result, list):
+                documents = result
+                stats = {}
+            else:
+                # 可能返回自定义对象，尝试访问 attributes
+                documents = getattr(result, "documents", None) or getattr(result, "docs", None) or []
+                stats = getattr(result, "stats", {}) or {}
+
             if not documents:
-                logger.warning("Webis IntelligentPipeline returned no documents")
+                logger.warning("Webis returned no documents")
                 return False
-            
-            print(f"\n✓ Webis fetched {len(documents)} validated documents")
-            print(f"   Accepted: {stats.get('accepted_count', 0)}")
-            print(f"   Rejected: {stats.get('rejected_count', 0)}")
-            print(f"   Iterations: {stats.get('iterations', 0)}\n")
-            
-            # Convert WebisDocument objects to RAG format
+
+            print(f"\n✓ Webis fetched {len(documents)} documents")
+            if stats:
+                print(f"   Stats: {stats}\n")
+
+            # 将各种文档格式标准化为 RAG 格式
             rag_documents = []
             for doc in documents:
-                # Extract content - use clean_content if available, fallback to content
-                clean_content = getattr(doc, "clean_content", None) or getattr(doc, "content", "")
-                
-                if not clean_content or not clean_content.strip():
-                    logger.debug(f"Skipping document with empty content")
+                # 支持 dict 和对象两种形式
+                if isinstance(doc, dict):
+                    clean_content = doc.get("clean_content") or doc.get("content", "")
+                    meta = doc.get("meta") or doc.get("metadata") or {}
+                    validation_score = doc.get("validation_score", doc.get("score", 0.0))
+                else:
+                    clean_content = getattr(doc, "clean_content", None) or getattr(doc, "content", "")
+                    meta = getattr(doc, "meta", None) or getattr(doc, "metadata", None) or {}
+                    validation_score = getattr(doc, "validation_score", getattr(doc, "score", 0.0))
+
+                if not clean_content or not str(clean_content).strip():
+                    logger.debug("Skipping document with empty content")
                     continue
-                
-                # Extract metadata
-                source = "unknown"
-                title = ""
-                
-                if hasattr(doc, "meta") and doc.meta:
-                    source = getattr(doc.meta, "url", None) or getattr(doc.meta, "title", "unknown")
-                    title = getattr(doc.meta, "title", "")
-                
+
+                # 提取来源与标题（兼容 dict/object）
+                if isinstance(meta, dict):
+                    source = meta.get("url") or meta.get("source") or meta.get("title") or "unknown"
+                    title = meta.get("title", "")
+                    source_plugin = meta.get("source_plugin") or meta.get("plugin") or "unknown"
+                else:
+                    source = getattr(meta, "url", None) or getattr(meta, "source", None) or getattr(meta, "title", "unknown")
+                    title = getattr(meta, "title", "")
+                    source_plugin = getattr(meta, "source_plugin", None) or getattr(meta, "plugin", None) or "unknown"
+
                 rag_documents.append({
                     "content": clean_content,
                     "source": source,
@@ -320,28 +374,25 @@ class RAGPipeline:
                     "structured_data": None,
                     "metadata": {
                         "from_webis": True,
-                        "webis_validation_score": getattr(doc, "validation_score", 0.0),
-                        "source_plugin": getattr(doc.meta, "source_plugin", "unknown") if hasattr(doc, "meta") and doc.meta else "unknown",
+                        "webis_validation_score": validation_score or 0.0,
+                        "source_plugin": source_plugin,
+                        "webis_stats": stats,
                         "timestamp": datetime.now().isoformat(),
                     }
                 })
-            
+
             if rag_documents:
-                # Process and store documents to RAG
                 print(f"Processing and storing {len(rag_documents)} documents to RAG...\n")
-                
                 store_result = self.process_and_store_documents(rag_documents, query=query)
-                
                 print(f"✓ Stored {store_result['processed_count']} documents")
                 print(f"✓ Generated {store_result['chunk_count']} chunks")
                 print(f"✓ Generated {store_result['embedding_count']} embeddings\n")
-                
                 return True
-            
+
             return False
-            
+
         except Exception as e:
-            logger.error(f"Failed to fetch from webis IntelligentPipeline: {e}", exc_info=True)
+            logger.error(f"Failed to fetch from webis: {e}", exc_info=True)
             return False
     
     def _should_fetch_webis(self, retrieval_result: Dict[str, Any]) -> bool:
