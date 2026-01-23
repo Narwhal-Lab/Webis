@@ -3,13 +3,15 @@ from .html_fetcher_plugin import HtmlFetcherPlugin
 from .video_plugin import VideoPlugin
 from .pdf_plugin import PDFPlugin
 from .document_parse_plugin import DocumentParsePlugin
+from .embedding_plugin import EmbeddingGemmaPlugin
 
 __all__ = [
-    "HtmlCleanerPlugin",
+    "HTMLCleanerPlugin",
     "HtmlFetcherPlugin",
     "VideoPlugin",
     "PDFPlugin",
     "DocumentParsePlugin",
+    "EmbeddingGemmaPlugin",
 ]
 
 # Auto-register plugins
@@ -21,3 +23,5 @@ registry.register(HtmlFetcherPlugin())
 registry.register(VideoPlugin())
 registry.register(PDFPlugin())
 registry.register(DocumentParsePlugin())
+# Note: EmbeddingGemmaPlugin not auto-registered as it requires sentence-transformers
+# It's instantiated directly in RAG pipeline when needed

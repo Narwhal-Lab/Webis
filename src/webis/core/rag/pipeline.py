@@ -16,9 +16,9 @@ import json
 from datetime import datetime
 import numpy as np
 
-from chunker import ChunkingPipeline, Chunk
-from embedding_processor import EmbeddingGemmaPlugin
-from rag_tools import RAGManager
+from webis.core.rag.chunker import ChunkingPipeline, Chunk
+from webis.plugins.processors.embedding_plugin import EmbeddingGemmaPlugin
+from webis.core.rag.manager import RAGManager
 
 logger = logging.getLogger(__name__)
 
@@ -263,6 +263,9 @@ class RAGPipeline:
             try:
                 ip_mod = importlib.import_module("webis.core.intelligent_pipeline")
                 schema_mod = importlib.import_module("webis.core.schema")
+                # Ensure plugins are registered
+                importlib.import_module("webis.plugins.sources")
+                importlib.import_module("webis.plugins.processors")
                 IntelligentPipeline = getattr(ip_mod, "IntelligentPipeline")
                 PipelineContext = getattr(schema_mod, "PipelineContext", None)
 

@@ -36,6 +36,12 @@ dependencies = [
     "rich>=10.0.0",
     "pyyaml>=6.0",
     "ddgs>=0.1.0",
+    # RAG Dependencies
+    "sentence-transformers>=2.2.0",
+    "openai>=1.0.0",
+    "transformers>=4.30.0",
+    "torch>=2.0.0",
+    "numpy>=1.20.0",
 ]
 
 [project.optional-dependencies]
@@ -47,11 +53,6 @@ dev = [
     "pre-commit>=3.0.0",
     "types-requests",
     "types-PyYAML",
-]
-docs = [
-    "mkdocs>=1.4.0",
-    "mkdocs-material>=9.0.0",
-    "mkdocstrings[python]>=0.20.0",
 ]
 
 [project.scripts]

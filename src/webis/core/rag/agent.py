@@ -45,7 +45,7 @@ def process_webis_documents(
     Returns:
         Processing result with document IDs and statistics
     """
-    from rag_pipeline import RAGPipeline
+    from webis.core.rag.pipeline import RAGPipeline
     
     if not documents:
         logger.warning("No documents to process")
@@ -97,8 +97,8 @@ class WebisRAGAgent:
     - TaskPipeline: For orchestrating tasks
     
     Example:
-        from rag_pipeline import RAGPipeline
-        from rag_tasks import TaskPipeline, PromptEnhancementTask
+        from webis.core.rag.pipeline import RAGPipeline
+        from webis.apps.rag.tasks import TaskPipeline, PromptEnhancementTask
         
         rag = RAGPipeline()
         tasks = TaskPipeline()
@@ -116,8 +116,8 @@ class WebisRAGAgent:
         """
         logger.warning(
             "WebisRAGAgent is deprecated. Use RAGPipeline + TaskPipeline directly:\n"
-            "  from rag_pipeline import RAGPipeline\n"
-            "  from rag_tasks import TaskPipeline, PromptEnhancementTask\n"
+            "  from webis.core.rag.pipeline import RAGPipeline\n"
+            "  from webis.apps.rag.tasks import TaskPipeline, PromptEnhancementTask\n"
             "  rag = RAGPipeline()\n"
             "  tasks = TaskPipeline()\n"
             "  tasks.add_task(PromptEnhancementTask(llm_agent=llm))"
@@ -129,8 +129,8 @@ class WebisRAGAgent:
         """
         DEPRECATED: Use RAGPipeline.retrieve() + TaskPipeline.execute() instead.
         """
-        from rag_pipeline import RAGPipeline
-        from rag_tasks import TaskPipeline, PromptEnhancementTask
+        from webis.core.rag.pipeline import RAGPipeline
+        from webis.apps.rag.tasks import TaskPipeline, PromptEnhancementTask
         
         logger.warning("handle_query() is deprecated. Use RAGPipeline + TaskPipeline directly")
         
@@ -159,8 +159,8 @@ def example_usage():
     This replaces the old WebisRAGAgent.handle_query() method.
     Saves all results to JSON files for inspection.
     """
-    from rag_pipeline import RAGPipeline
-    from rag_tasks import TaskPipeline, PromptEnhancementTask
+    from webis.core.rag.pipeline import RAGPipeline
+    from webis.apps.rag.tasks import TaskPipeline, PromptEnhancementTask
     from datetime import datetime
     
     # Initialize components

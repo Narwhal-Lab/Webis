@@ -10,7 +10,7 @@ import numpy as np
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from rag_component import RAGComponent, SimpleVectorStore
+from webis.core.rag.component import RAGComponent, SimpleVectorStore
 
 logger = logging.getLogger(__name__)
 

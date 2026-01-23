@@ -34,6 +34,7 @@ webis run "Find news about Peking University in the last three months and genera
 ```
 
 ✨ **New**: Results are automatically saved to `output/{timestamp}/`.
+
 * `report.html`: A beautiful HTML report (if extraction succeeds).
 * `result.json`: Structured extracted data.
 * `documents.json`: **Full raw and cleaned content** of all crawled documents (saved even if extraction fails).

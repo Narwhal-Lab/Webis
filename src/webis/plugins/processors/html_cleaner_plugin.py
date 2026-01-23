@@ -1,10 +1,12 @@
 """
 HTML Cleaner Processor Plugin for WebIS
 
-LLM-based approach:
-- Extract all visible text from HTML
+LLM-based approach (strict mode):
+- Extract all visible text from HTML using BeautifulSoup
 - Use LLM to identify and extract main content
-- No fallback - fails if LLM fails
+- Returns structured JSON with main_text and reason
+- Raises exception if LLM fails or returns invalid response
+- No fallback mechanisms - ensures data quality at the cost of reliability
 """
 
 import json
@@ -82,19 +84,17 @@ class HTMLCleanerPlugin(ProcessorPlugin):
             # Apply mojibake fix
             page_text = maybe_fix_mojibake(page_text)
 
-            # Use LLM to clean text
+            # Use LLM to clean text - required, will raise exception if fails
             if not page_text:
                 logger.warning(f"[HTMLCleanerPlugin] No text extracted from {doc.id}")
                 return doc
 
+            # This will raise exception if LLM cleaning fails
             clean_text = self._llm_clean(page_text)
             
-            if clean_text:
-                doc.clean_content = clean_text
-                doc.add_processing_step(self.name)
-                logger.info(f"[HTMLCleanerPlugin] Successfully cleaned {doc.id}, extracted {len(clean_text)} chars")
-            else:
-                logger.error(f"[HTMLCleanerPlugin] LLM cleaning failed for {doc.id}")
+            doc.clean_content = clean_text
+            doc.add_processing_step(self.name)
+            logger.info(f"[HTMLCleanerPlugin] Successfully cleaned {doc.id}, extracted {len(clean_text)} chars")
             
             return doc
 
@@ -141,30 +141,25 @@ class HTMLCleanerPlugin(ProcessorPlugin):
             {"role": "user", "content": user},
         ]
 
-        # Call LLM
+        # Call LLM - must succeed
         response = self._llm_router.chat(messages, temperature=0.0, max_tokens=4096)
         
         if not response.content:
-            logger.warning("[HTMLCleanerPlugin] LLM returned empty response")
-            return None
+            logger.error("[HTMLCleanerPlugin] LLM returned empty response")
+            raise RuntimeError("LLM cleaning failed: Empty response from LLM API")
 
-        # Parse JSON response
+        # Parse JSON response - no fallback, must succeed
         try:
             result = json.loads(response.content)
             main_text = result.get("main_text", "").strip()
             
-            if main_text:
-                logger.debug(f"[HTMLCleanerPlugin] LLM extracted {len(main_text)} chars. Reason: {result.get('reason', 'N/A')}")
-                return main_text
-            else:
-                logger.warning("[HTMLCleanerPlugin] LLM returned empty main_text")
-                return None
+            if not main_text:
+                raise ValueError("LLM returned empty main_text in JSON response")
+            
+            logger.debug(f"[HTMLCleanerPlugin] LLM extracted {len(main_text)} chars. Reason: {result.get('reason', 'N/A')}")
+            return main_text
             
         except json.JSONDecodeError as e:
-            logger.warning(f"[HTMLCleanerPlugin] Failed to parse LLM response as JSON: {e}")
-            # Try to use raw content if JSON parsing fails but response looks reasonable
-            content = response.content.strip()
-            if content and len(content) > 50:
-                logger.info("[HTMLCleanerPlugin] Using raw LLM response as fallback")
-                return content
-            return None
+            logger.error(f"[HTMLCleanerPlugin] Failed to parse LLM response as JSON: {e}")
+            logger.error(f"[HTMLCleanerPlugin] Raw LLM response: {response.content[:200]}...")
+            raise RuntimeError(f"LLM cleaning failed: Invalid JSON response - {e}") from e
