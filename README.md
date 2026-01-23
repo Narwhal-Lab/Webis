@@ -33,7 +33,26 @@ Execute a full pipeline: identifying sources -> crawling -> cleaning -> extracti
 webis run "Find news about Peking University in the last three months and generate a report" --limit 3
 ```
 
-✨ **New**: Results are automatically saved to `output/{timestamp}/` as both JSON and a beautiful HTML report.
+✨ **New**: Results are automatically saved to `output/{timestamp}/`.
+* `report.html`: A beautiful HTML report (if extraction succeeds).
+* `result.json`: Structured extracted data.
+* `documents.json`: **Full raw and cleaned content** of all crawled documents (saved even if extraction fails).
+
+## ⚠️ Configuration
+
+You must configure your API keys in `.env` for Agent features to work.
+
+```bash
+cp .env.example .env
+# Edit .env and set WENDALOG_API_KEY (or OPENAI_API_KEY)
+```
+
+Dependencies:
+This project requires `duckduckgo-search` (renamed to `ddgs`). If you face issues, run:
+
+```bash
+pip install ddgs
+```
 
 ### 2. Crawl Only
 

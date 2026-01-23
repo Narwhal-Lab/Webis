@@ -1,127 +1,131 @@
 """
-Baidu AI Search Source Plugin for Webis.
+Baidu Search Source Plugin for Webis (Enhanced version).
+Based on student implementation - handles redirect URL resolution.
 """
 
 import logging
-import os
-import json
-import time
-from typing import Iterator, Optional, Dict, Any, List
+from typing import Iterator, Optional
 
 import requests
+from bs4 import BeautifulSoup
 
 from webis.core.plugin import SourcePlugin
 from webis.core.schema import WebisDocument, DocumentType, DocumentMetadata, PipelineContext
 
 logger = logging.getLogger(__name__)
 
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"
+}
+
 
 class BaiduSearchPlugin(SourcePlugin):
     """
-    Search using Baidu Qianfan AI Search MCP.
+    Search using Baidu and download complete HTML pages.
+    Handles Baidu's redirect URLs to get real destination.
     """
-    
+
     name = "baidu_search"
-    description = "Search using Baidu Qianfan AI Search"
-    required_env_vars = ["BAIDU_AISEARCH_BEARER"]
-    
-    def __init__(self, config: Optional[dict] = None):
-        super().__init__(config)
-        self.mcp_url = self.config.get(
-            "mcp_url", 
-            os.environ.get("BAIDU_AISEARCH_MCP_URL", "https://qianfan.baidubce.com/v2/ai_search/mcp")
-        )
+    description = "Search using Baidu (China) and download full HTML content"
 
     def fetch(
-        self, 
-        query: str, 
-        limit: int = 10, 
+        self,
+        query: str,
+        limit: int = 10,
         context: Optional[PipelineContext] = None,
         **kwargs
     ) -> Iterator[WebisDocument]:
-        bearer = os.environ.get("BAIDU_AISEARCH_BEARER")
-        if not bearer:
-            logger.error("Missing BAIDU_AISEARCH_BEARER")
-            return
 
-        # 1. List tools
+        logger.info(f"[Baidu] Searching: {query}")
+
+        url = "https://www.baidu.com/s"
+        params = {"wd": query}
+
+        # Try multiple times to handle network instability
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                resp = requests.get(url, params=params, headers=HEADERS, timeout=10)
+                resp.raise_for_status()
+                break
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    logger.error(f"[Baidu] Search failed after {max_retries} attempts: {e}")
+                    return
+                logger.warning(f"[Baidu] Search attempt {attempt+1} failed: {e}. Retrying...")
+
         try:
-            tools = self._mcp_tools_list(bearer)
-            if not tools:
-                logger.warning("No tools available from Baidu MCP")
-                return
-                
-            # 2. Pick search tool (simplified logic: pick first 'search' tool)
-            chosen_tool = None
-            for tool in tools:
-                if "search" in tool["name"].lower():
-                    chosen_tool = tool
+            soup = BeautifulSoup(resp.text, "html.parser")
+
+            # Baidu results are typically in h3.t a tags, or sometimes slightly different structure
+            # Enhanced selector to catch more result types
+            results = soup.select("h3.t a, .c-container .t a")
+            
+            # Remove duplicates based on link
+            seen_links = set()
+
+            count = 0
+            for a in results:
+                if count >= limit:
                     break
-            
-            if not chosen_tool:
-                chosen_tool = tools[0]
+
+                link = a.get("href")
+                # Ensure it's a valid Baidu link (usually starts with http://www.baidu.com/link)
+                if not link or link in seen_links:
+                    continue
                 
-            # 3. Call tool
-            args = {"query": query} # Simplified arg construction
-            raw_response = self._mcp_tools_call(bearer, chosen_tool["name"], args)
-            
-            # 4. Extract URLs and yield documents
-            # The raw response structure depends on the specific MCP tool
-            # Assuming it returns a list of results or a text with links
-            
-            # For now, let's try to extract URLs from the raw response
-            # This logic is adapted from the original tool but simplified
-            urls = self._extract_urls(raw_response)
-            
-            for i, url in enumerate(urls):
-                if i >= limit:
-                    break
-                    
-                yield WebisDocument(
-                    content="", # Content to be fetched by processor
-                    doc_type=DocumentType.HTML,
-                    meta=DocumentMetadata(
-                        url=url,
-                        source_plugin=self.name,
-                        title=f"Baidu Result {i+1}" # Placeholder
+                title = a.get_text(strip=True)
+                seen_links.add(link)
+
+                try:
+                    # Resolve Baidu's redirect to get real URL
+                    # Use GET instead of HEAD for better compatibility with some servers
+                    real_resp = requests.get(
+                        link,
+                        headers=HEADERS,
+                        allow_redirects=True,
+                        timeout=8,
+                        stream=True  # Don't download body yet
                     )
-                )
-                
+                    real_url = real_resp.url
+                    real_resp.close() # Close stream
+
+                    # Download the actual page
+                    logger.info(f"   Fetching: {real_url}")
+                    content = self._fetch_page(real_url)
+
+                    if content and len(content) > 100:
+                        yield WebisDocument(
+                            content=content,
+                            doc_type=DocumentType.HTML,
+                            meta=DocumentMetadata(
+                                url=real_url,
+                                title=title,
+                                source_plugin=self.name,
+                                custom={"baidu_redirect_url": link}
+                            )
+                        )
+                        count += 1
+                    else:
+                         logger.warning(f"   Skipped empty/short content: {real_url}")
+
+                except Exception as e:
+                    logger.warning(f"[Baidu] Failed to process result '{title}': {e}")
+                    continue
+
         except Exception as e:
-            logger.error(f"Baidu search failed: {e}")
+            logger.error(f"[Baidu] Parsing failed: {e}")
 
-    def _mcp_tools_list(self, bearer: str) -> List[Dict[str, Any]]:
-        headers = {"Content-Type": "application/json", "Authorization": f"Bearer {bearer}"}
-        payload = {"jsonrpc": "2.0", "method": "tools/list", "id": 1}
-        resp = requests.post(self.mcp_url, headers=headers, json=payload, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
-        return data.get("result", {}).get("tools", [])
+    def _fetch_page(self, url: str) -> str:
+        """Download HTML content from URL."""
+        try:
+            r = requests.get(url, headers=HEADERS, timeout=15)
+            r.raise_for_status()
+            r.encoding = r.apparent_encoding
+            return r.text
 
-    def _mcp_tools_call(self, bearer: str, tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
-        headers = {"Content-Type": "application/json", "Authorization": f"Bearer {bearer}"}
-        payload = {
-            "jsonrpc": "2.0", 
-            "method": "tools/call", 
-            "id": 1,
-            "params": {"name": tool_name, "arguments": args}
-        }
-        resp = requests.post(self.mcp_url, headers=headers, json=payload, timeout=30)
-        resp.raise_for_status()
-        return resp.json().get("result", {})
-
-    def _extract_urls(self, data: Any) -> List[str]:
-        # Simple recursive URL extractor
-        urls = []
-        if isinstance(data, str):
-            # Simple regex for http/https urls
-            import re
-            found = re.findall(r'https?://(?:[-\w.]|(?:%[\da-fA-F]{2}))+[/\w\.-]*', data)
-            urls.extend(found)
-        elif isinstance(data, list):
-            for item in data:
-                urls.extend(self._extract_urls(item))
-        elif isinstance(data, dict):
-            for v in data.values():
-                urls.extend(self._extract_urls(v))
-        return list(set(urls)) # Deduplicate
+        except Exception as e:
+            logger.warning(f"[Baidu] Failed to fetch {url}: {e}")
+            return ""

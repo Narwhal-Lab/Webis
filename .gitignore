@@ -21,6 +21,7 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+legacy_v1/
 
 # Webis Output
 output/

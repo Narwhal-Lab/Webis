@@ -1,11 +1,13 @@
 """
-GNews Source Plugin for Webis.
+GNews Source Plugin for Webis (Enhanced version).
+Combines API and scraping fallback based on student implementation.
 """
 
 import logging
 import os
-import requests
 from typing import Iterator, Optional
+
+import requests
 
 from webis.core.plugin import SourcePlugin
 from webis.core.schema import WebisDocument, DocumentType, DocumentMetadata, PipelineContext
@@ -17,148 +19,165 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+}
+
 
 class GNewsPlugin(SourcePlugin):
     """
-    Fetch news articles using GNews (Google News).
+    Fetch news using GNews API (if available) + Google News scraping fallback.
+    Downloads complete article content.
     """
-    
+
     name = "gnews"
-    description = "Search Google News for articles"
-    
+    description = "Search Google News and download full article content"
+
     def __init__(self, config: Optional[dict] = None):
         super().__init__(config)
         self.language = self.config.get("language", "en")
         self.country = self.config.get("country", "US")
         self.period = self.config.get("period", "7d")
-        self.max_results = self.config.get("max_results", 10)
-        self.exclude_websites = self.config.get("exclude_websites", [])
-        
-        self._client = None
         self._api_key = os.environ.get("GNEWS_API_KEY")
+        self._client = None
 
     def initialize(self, context: Optional[PipelineContext] = None) -> None:
         super().initialize(context)
-        
-        # If API key is present, we don't strictly need gnews package
-        if not self._api_key and GNews is None:
-            raise ImportError("gnews package is required when no GNEWS_API_KEY is provided. Install with `pip install gnews`")
-        
-        if not self._api_key:
+
+        # Initialize scraper client as fallback
+        if GNews is not None:
             self._client = GNews(
                 language=self.language,
                 country=self.country,
-                period=self.period,
-                max_results=self.max_results,
-                exclude_websites=self.exclude_websites
+                period=self.period
             )
 
     def fetch(
-        self, 
-        query: str, 
-        limit: int = 10, 
+        self,
+        query: str,
+        limit: int = 10,
         context: Optional[PipelineContext] = None,
         **kwargs
     ) -> Iterator[WebisDocument]:
+
         if not self._initialized:
             self.initialize(context)
-            
-        logger.info(f"Searching GNews for: {query}")
-        
+
+        logger.info(f"[GNews] Searching: {query}")
+        seen_urls = set()
+        count = 0
+
+        # Try API first (if available)
         if self._api_key:
-            return self._fetch_via_api(query, limit, context)
-        else:
-            return self._fetch_via_client(query, limit)
+            try:
+                for doc in self._fetch_via_api(query, limit, seen_urls):
+                    yield doc
+                    count += 1
+                    if count >= limit:
+                        return
+            except Exception as e:
+                logger.warning(f"[GNews] API failed: {e}, falling back to scraper")
 
-    def _fetch_via_api(self, query: str, limit: int, context: Optional[PipelineContext] = None) -> Iterator[WebisDocument]:
-        """Fetch using GNews.io API."""
+        # Fallback to scraper
+        if count < limit and self._client:
+            try:
+                for doc in self._fetch_via_scraper(query, limit - count, seen_urls):
+                    yield doc
+            except Exception as e:
+                logger.error(f"[GNews] Scraper also failed: {e}")
+
+    def _fetch_via_api(self, query: str, limit: int, seen_urls: set) -> Iterator[WebisDocument]:
+        """Fetch news via GNews official API."""
         url = "https://gnews.io/api/v4/search"
-        params = {
-            "q": query,
-            "lang": self.language,
-            "max": limit,
-            "token": self._api_key,
-            "country": self.country.lower() if self.country else "us",
-        }
-        
-        try:
-            r = requests.get(url, params=params, timeout=20)
-            r.raise_for_status()
-            data = r.json()
-            articles = data.get("articles", [])
-        except Exception as e:
-            logger.error(f"GNews API request failed: {e}")
-            return
+        params = {"q": query, "lang": self.language, "max": limit, "token": self._api_key}
 
-        for item in articles:
-            url_link = item.get("url")
-            if not url_link:
+        resp = requests.get(url, params=params, timeout=20)
+        resp.raise_for_status()
+        articles = resp.json().get("articles", [])
+
+        for article in articles:
+            link = article.get("url")
+            if not link or link in seen_urls:
                 continue
-                
+
+            seen_urls.add(link)
+            content = self._download_article(link)
+
             yield WebisDocument(
-                content="", # Content should be fetched by HTMLFetcherPlugin
+                content=content,
                 doc_type=DocumentType.HTML,
                 meta=DocumentMetadata(
-                    url=url_link,
-                    title=item.get("title"),
-                    published_at=item.get("publishedAt"),
+                    url=link,
+                    title=article.get("title", ""),
                     source_plugin=self.name,
                     custom={
-                        "description": item.get("description"),
-                        "source": item.get("source", {}).get("name")
+                        "source": article.get("source", {}).get("name"),
+                        "published_at": article.get("publishedAt"),
+                        "description": article.get("description")
                     }
                 )
             )
 
-    def _fetch_via_client(self, query: str, limit: int) -> Iterator[WebisDocument]:
-        """Fetch using gnews python package (scraper)."""
-        # GNews.get_news returns a list of dicts
-        # [{'title': ..., 'description': ..., 'published date': ..., 'url': ..., 'publisher': ...}]
-        try:
-            results = self._client.get_news(query)
-        except Exception as e:
-            logger.error(f"GNews search failed: {e}")
+    def _fetch_via_scraper(self, query: str, limit: int, seen_urls: set) -> Iterator[WebisDocument]:
+        """Fetch news via GNews scraping library."""
+        if not self._client:
             return
 
+        results = self._client.get_news(query)
         count = 0
+
         for item in results:
             if count >= limit:
                 break
-            
-            url = item.get("url")
-            if not url:
-                continue
-                
-            # GNews tool usually just gives metadata, we might need to fetch full content
-            # But for now, let's create a document with what we have.
-            # Ideally, a separate "Downloader" processor would fetch the full HTML.
-            # Or we can use GNews.get_full_article if configured.
-            
-            # For this v1 migration, let's assume we just pass the URL and metadata
-            # and let a downstream processor handle the fetching if content is empty.
-            
-            # However, the original GNewsTool might have fetched content. 
-            # Let's check the original implementation if needed. 
-            # But for a "Source Plugin", returning the URL and metadata is often enough 
-            # if we have a "Fetcher" processor. 
-            # To be safe and useful, let's try to get the full article if possible, 
-            # or just return the metadata.
-            
-            # Let's stick to the "Source" responsibility: finding the resource.
-            
-            yield WebisDocument(
-                content="", # Content to be fetched by a processor
-                doc_type=DocumentType.HTML,
-                meta=DocumentMetadata(
-                    url=url,
-                    title=item.get("title"),
-                    published_at=item.get("published date"),
-                    source_plugin=self.name,
-                    custom={
-                        "publisher": item.get("publisher"),
-                        "description": item.get("description")
-                    }
-                )
-            )
-            count += 1
 
+            link = item.get('url')
+            if not link:
+                continue
+
+            try:
+                # Resolve redirect
+                real_resp = requests.head(link, allow_redirects=True, timeout=10, headers=HEADERS)
+                real_url = real_resp.url
+
+                if real_url in seen_urls:
+                    continue
+
+                seen_urls.add(real_url)
+                content = self._download_article(real_url)
+
+                yield WebisDocument(
+                    content=content,
+                    doc_type=DocumentType.HTML,
+                    meta=DocumentMetadata(
+                        url=real_url,
+                        title=item.get("title", ""),
+                        source_plugin=self.name,
+                        custom={
+                            "publisher": item.get("publisher", {}).get("title"),
+                            "published_date": item.get("published date")
+                        }
+                    )
+                )
+                count += 1
+
+            except Exception as e:
+                logger.warning(f"[GNews] Failed to process {link}: {e}")
+                continue
+
+    def _download_article(self, url: str) -> str:
+        """Download full article HTML."""
+        try:
+            r = requests.get(url, headers=HEADERS, timeout=20)
+            r.raise_for_status()
+
+            # Check content type
+            content_type = r.headers.get('Content-Type', '').lower()
+            if 'text' in content_type or 'html' in content_type:
+                return r.text
+            else:
+                # Binary content, return empty (will be handled by processor)
+                return ""
+
+        except Exception as e:
+            logger.warning(f"[GNews] Failed to download {url}: {e}")
+            return ""
