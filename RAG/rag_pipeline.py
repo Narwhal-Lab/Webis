@@ -244,22 +244,10 @@ class RAGPipeline:
         Fetch documents from webis pipeline using IntelligentPipeline when retrieval results are insufficient.
         Updated to support newer webis plugin APIs while remaining backward compatible.
         """
-        try:
-            print(f"\n⚠️  Insufficient documents in RAG")
-            print(f"📡 Fetching from webis for query: '{query}'...\n")
-            import webis as webis_mod
-        except ImportError as e:
-            logger.warning(f"Webis not available: {e}")
-            return False
+        print(f"\n⚠️  Insufficient documents in RAG")
+        print(f"📡 Fetching from webis for query: '{query}'...\n")
 
-        # default context/requirements
-        try:
-            # try to build a context if available
-            PipelineContext = getattr(webis_mod, "PipelineContext", None)
-            context = PipelineContext(task=query) if PipelineContext else None
-        except Exception:
-            context = None
-
+        # default requirements/context
         requirements = {
             "min_count": 5,
             "relevance_threshold": 0.6,
@@ -267,58 +255,87 @@ class RAGPipeline:
         }
 
         try:
+            import importlib
+
             result = None
 
-            # 1) 优先：IntelligentPipeline (旧/新位置都尝试)
-            PipelineCls = None
-            if hasattr(webis_mod, "IntelligentPipeline"):
-                PipelineCls = getattr(webis_mod, "IntelligentPipeline")
-            elif hasattr(webis_mod, "pipeline") and hasattr(webis_mod.pipeline, "IntelligentPipeline"):
-                PipelineCls = getattr(webis_mod.pipeline, "IntelligentPipeline")
+            # 优先尝试直接导入 internal IntelligentPipeline（如果包存在）
+            try:
+                ip_mod = importlib.import_module("webis.core.intelligent_pipeline")
+                schema_mod = importlib.import_module("webis.core.schema")
+                IntelligentPipeline = getattr(ip_mod, "IntelligentPipeline")
+                PipelineContext = getattr(schema_mod, "PipelineContext", None)
 
-            if PipelineCls:
-                pipeline = PipelineCls()
-                # 兼容不同 run 签名：优先传 dict 风格，失败则尝试简单调用
+                pipeline = IntelligentPipeline()
+                context = PipelineContext(task=query) if PipelineContext else None
                 try:
                     result = pipeline.run(query=query, requirements=requirements, context=context)
                 except TypeError:
                     result = pipeline.run(query, requirements, context)
-            else:
-                # 2) 尝试 Client 风格或模块级 fetch 接口
-                client = None
-                if hasattr(webis_mod, "Client"):
-                    client = getattr(webis_mod, "Client")()
-                elif hasattr(webis_mod, "WebisClient"):
-                    client = getattr(webis_mod, "WebisClient")()
-                # 模块级 fetch/search 函数
-                if client:
-                    if hasattr(client, "fetch_documents"):
-                        result = client.fetch_documents(query=query, min_count=requirements["min_count"], relevance_threshold=requirements["relevance_threshold"])
-                    elif hasattr(client, "search"):
-                        # search 可能返回 list 或 dict
-                        try:
-                            result = client.search(query=query, limit=requirements["min_count"])
-                        except TypeError:
-                            result = client.search(query)
-                    elif hasattr(client, "crawl"):
-                        result = client.crawl(query=query, max_iterations=requirements["max_iterations"])
-                    else:
-                        logger.warning("Unsupported webis Client API")
-                        return False
-                else:
-                    # 尝试模块级接口
-                    if hasattr(webis_mod, "fetch_documents"):
-                        result = webis_mod.fetch_documents(query=query, **requirements)
-                    elif hasattr(webis_mod, "search"):
-                        try:
-                            result = webis_mod.search(query=query, limit=requirements["min_count"])
-                        except TypeError:
-                            result = webis_mod.search(query)
-                    else:
-                        logger.warning("No supported webis API found in module")
-                        return False
+            except (ImportError, ModuleNotFoundError):
+                # 如果没有 webis 包，优雅退出（不打印 traceback）
+                try:
+                    webis_mod = importlib.import_module("webis")
+                except (ImportError, ModuleNotFoundError):
+                    logger.warning("Webis not available in environment; skipping web fetch")
+                    return False
 
-            # 规范化返回值 -> documents (list) 和 stats (dict)
+                # try to build a context if available on module
+                try:
+                    PipelineContext = getattr(webis_mod, "PipelineContext", None)
+                    context = PipelineContext(task=query) if PipelineContext else None
+                except Exception:
+                    context = None
+
+                result = None
+
+                # Try module/class-level IntelligentPipeline
+                PipelineCls = None
+                if hasattr(webis_mod, "IntelligentPipeline"):
+                    PipelineCls = getattr(webis_mod, "IntelligentPipeline")
+                elif hasattr(webis_mod, "pipeline") and hasattr(webis_mod.pipeline, "IntelligentPipeline"):
+                    PipelineCls = getattr(webis_mod.pipeline, "IntelligentPipeline")
+
+                if PipelineCls:
+                    pipeline = PipelineCls()
+                    try:
+                        result = pipeline.run(query=query, requirements=requirements, context=context)
+                    except TypeError:
+                        result = pipeline.run(query, requirements, context)
+                else:
+                    # Try client-style APIs or module-level fetchers
+                    client = None
+                    if hasattr(webis_mod, "Client"):
+                        client = getattr(webis_mod, "Client")()
+                    elif hasattr(webis_mod, "WebisClient"):
+                        client = getattr(webis_mod, "WebisClient")()
+
+                    if client:
+                        if hasattr(client, "fetch_documents"):
+                            result = client.fetch_documents(query=query, min_count=requirements["min_count"], relevance_threshold=requirements["relevance_threshold"])
+                        elif hasattr(client, "search"):
+                            try:
+                                result = client.search(query=query, limit=requirements["min_count"])
+                            except TypeError:
+                                result = client.search(query)
+                        elif hasattr(client, "crawl"):
+                            result = client.crawl(query=query, max_iterations=requirements["max_iterations"])
+                        else:
+                            logger.warning("Unsupported webis Client API")
+                            return False
+                    else:
+                        if hasattr(webis_mod, "fetch_documents"):
+                            result = webis_mod.fetch_documents(query=query, **requirements)
+                        elif hasattr(webis_mod, "search"):
+                            try:
+                                result = webis_mod.search(query=query, limit=requirements["min_count"])
+                            except TypeError:
+                                result = webis_mod.search(query)
+                        else:
+                            logger.warning("No supported webis API found in module")
+                            return False
+
+            # Normalize result -> documents (list) and stats (dict)
             documents = []
             stats = {}
             if isinstance(result, dict):
@@ -328,7 +345,6 @@ class RAGPipeline:
                 documents = result
                 stats = {}
             else:
-                # 可能返回自定义对象，尝试访问 attributes
                 documents = getattr(result, "documents", None) or getattr(result, "docs", None) or []
                 stats = getattr(result, "stats", {}) or {}
 
@@ -340,10 +356,9 @@ class RAGPipeline:
             if stats:
                 print(f"   Stats: {stats}\n")
 
-            # 将各种文档格式标准化为 RAG 格式
+            # Normalize documents into RAG format
             rag_documents = []
             for doc in documents:
-                # 支持 dict 和对象两种形式
                 if isinstance(doc, dict):
                     clean_content = doc.get("clean_content") or doc.get("content", "")
                     meta = doc.get("meta") or doc.get("metadata") or {}
@@ -357,7 +372,6 @@ class RAGPipeline:
                     logger.debug("Skipping document with empty content")
                     continue
 
-                # 提取来源与标题（兼容 dict/object）
                 if isinstance(meta, dict):
                     source = meta.get("url") or meta.get("source") or meta.get("title") or "unknown"
                     title = meta.get("title", "")
