@@ -85,15 +85,15 @@ class IntelligentPipeline:
             max_attempts=max_iterations
         )
         
-        logger.info(f"🚀 Starting intelligent pipeline for query: '{query}'")
-        logger.info(f"   Requirements: {min_count} docs, threshold={relevance_threshold}")
+        print(f"🚀 Starting intelligent pipeline for query: '{query}' \n")
+        print(f"   Requirements: {min_count} docs, threshold={relevance_threshold} \n")
         
         # Main validation loop
         for iteration in range(max_iterations):
             state.attempts = iteration + 1
-            logger.info(f"\n{'='*60}")
-            logger.info(f"Iteration {iteration + 1}/{max_iterations}")
-            logger.info(f"{'='*60}")
+            print(f"\n{'='*60} \n")
+            print(f"Iteration {iteration + 1}/{max_iterations}")
+            print(f"{'='*60}")
             
             # Step 1: Check if we need more documents
             is_sufficient, shortage = self.validation_agent.check_quantity(
@@ -102,18 +102,18 @@ class IntelligentPipeline:
             )
             
             if is_sufficient:
-                logger.info(f"✓ Sufficient documents collected ({len(state.current_docs)}/{min_count})")
+                print(f"✓ Sufficient documents collected ({len(state.current_docs)}/{min_count})")
                 break
             
             # Step 2: Crawl more documents
             crawl_limit = shortage + 5  # Get a few extra to account for rejections
-            logger.info(f"📥 Crawling {crawl_limit} documents...")
+            print(f"📥 Crawling {crawl_limit} documents...")
             
             # Identify tools that failed in previous iterations (fetched 0 docs)
             # We track this in a simple way for now
             excluded_tools = state.failed_tools
             if excluded_tools:
-                logger.info(f"   Excluding failed tools: {excluded_tools}")
+                print(f"   Excluding failed tools: {excluded_tools}")
 
             raw_docs = self.crawler_agent.run(
                 task=query,
@@ -135,24 +135,24 @@ class IntelligentPipeline:
                     successful_tools.add(doc.meta.source_plugin)
             
             if not raw_docs:
-                logger.warning(f"❌ No documents fetched in iteration {iteration + 1}")
+                print(f"❌ No documents fetched in iteration {iteration + 1}")
                 # Mark strategy as failed
                 failed = self.crawler_agent.last_used_tools
                 if failed:
-                    logger.warning(f"   Marking tools as failed for next iteration: {failed}")
+                    print(f"   Marking tools as failed for next iteration: {failed}")
                     state.failed_tools.extend(failed)
                     # Deduplicate
                     state.failed_tools = list(set(state.failed_tools))
             else:
-                 logger.info(f"   Fetched {len(raw_docs)} raw documents from: {successful_tools}")
+                 print(f"   Fetched {len(raw_docs)} raw documents from: {successful_tools}")
             
             # Step 3: Clean documents
-            logger.info(f"🧹 Cleaning {len(raw_docs)} documents...")
+            print(f"🧹 Cleaning {len(raw_docs)} documents...")
             cleaned_docs = self._clean_documents(raw_docs, context)
-            logger.info(f"   Cleaned {len(cleaned_docs)} documents")
+            print(f"   Cleaned {len(cleaned_docs)} documents")
             
             # Step 4: Validate relevance
-            logger.info(f"🔍 Validating relevance...")
+            print(f"🔍 Validating relevance...")
             for doc in cleaned_docs:
                 # Skip if already validated
                 if doc in state.current_docs or doc in state.rejected_docs:
@@ -169,15 +169,15 @@ class IntelligentPipeline:
                     state.add_decision(doc, "REJECT", f"Score: {score:.2f} - {reason}")
             
             # Status update
-            logger.info(f"\n📊 Status: {len(state.current_docs)}/{min_count} validated documents")
+            print(f"\n📊 Status: {len(state.current_docs)}/{min_count} validated documents")
             
         # Final results
-        logger.info(f"\n{'='*60}")
-        logger.info(f"Pipeline completed")
-        logger.info(f"{'='*60}")
-        logger.info(f"✓ Accepted: {len(state.current_docs)} documents")
-        logger.info(f"✗ Rejected: {len(state.rejected_docs)} documents")
-        logger.info(f"🔄 Iterations: {state.attempts}/{max_iterations}")
+        print(f"\n{'='*60}")
+        print(f"Pipeline completed")
+        print(f"{'='*60}")
+        print(f"✓ Accepted: {len(state.current_docs)} documents")
+        print(f"✗ Rejected: {len(state.rejected_docs)} documents")
+        print(f"🔄 Iterations: {state.attempts}/{max_iterations}")
         
         return {
             "documents": state.current_docs,
@@ -217,10 +217,10 @@ class IntelligentPipeline:
                     cleaned.append(cleaned_doc)
                 else:
                     url = doc.meta.url if doc.meta else doc.id
-                    logger.warning(f"⚠️  Failed to clean: {url}")
+                    print(f"⚠️  Failed to clean: {url}")
             except Exception as e:
                 url = doc.meta.url if doc.meta else doc.id
-                logger.error(f"❌ Cleaning error for {url}: {e}")
+                print(f"❌ Cleaning error for {url}: {e}")
                 continue
         
         return cleaned

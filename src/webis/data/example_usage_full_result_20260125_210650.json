@@ -1,0 +1,25 @@
+{
+  "timestamp": "2026-01-25T21:06:50.411215",
+  "query": "tell me the recent news of china economy",
+  "rag_context": {
+    "query": "tell me the recent news of china economy",
+    "metadata": {
+      "retrieval_count": 0,
+      "top_k": 3,
+      "webis_fetched": false
+    },
+    "context_text_length": 0,
+    "documents_count": 0,
+    "scores": []
+  },
+  "documents": [],
+  "task_results": [
+    {
+      "task_name": "prompt_enhancement",
+      "success": true,
+      "enhanced_prompt": "tell me the recent news of china economy",
+      "reference_count": 0,
+      "query": "tell me the recent news of china economy"
+    }
+  ]
+}

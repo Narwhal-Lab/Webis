@@ -24,134 +24,6 @@ import json
 
 logger = logging.getLogger(__name__)
 
-
-def process_webis_documents(
-    documents: List[Dict[str, Any]],
-    rag_store_path: str = "./data/rag_store.json",
-    chunk_strategy: str = "sliding_window",
-    chunk_size: int = 512,
-    embedding_model_type: str = "gemma",
-) -> Dict[str, Any]:
-    """
-    Process documents from webis pipeline and store in RAG.
-    
-    Args:
-        documents: List of documents from webis pipeline
-        rag_store_path: Path to RAG storage
-        chunk_strategy: Chunking strategy
-        chunk_size: Chunk size
-        embedding_model_type: Embedding model type
-        
-    Returns:
-        Processing result with document IDs and statistics
-    """
-    from webis.core.rag.pipeline import RAGPipeline
-    
-    if not documents:
-        logger.warning("No documents to process")
-        return {
-            "success": False,
-            "document_count": 0,
-            "message": "No documents provided"
-        }
-    
-    try:
-        # Initialize RAG pipeline
-        rag_pipeline = RAGPipeline(
-            rag_store_path=rag_store_path,
-            chunk_strategy=chunk_strategy,
-            chunk_size=chunk_size,
-            embedding_model_type=embedding_model_type,
-        )
-        
-        # Process and store documents
-        result = rag_pipeline.process_and_store_documents(documents, query="")
-        
-        logger.info(f"Successfully processed {len(documents)} documents")
-        
-        return {
-            "success": True,
-            "document_count": len(documents),
-            "result": result,
-            "message": "Documents processed and stored successfully"
-        }
-        
-    except Exception as e:
-        logger.error(f"Failed to process webis documents: {e}")
-        return {
-            "success": False,
-            "document_count": len(documents),
-            "error": str(e),
-            "message": "Failed to process documents"
-        }
-
-
-class WebisRAGAgent:
-    """
-    DEPRECATED: Use RAGPipeline + TaskPipeline directly instead.
-    
-    This class is maintained for backward compatibility only.
-    For new code, directly use:
-    - RAGPipeline: For document retrieval
-    - RAGTask subclasses: For downstream processing
-    - TaskPipeline: For orchestrating tasks
-    
-    Example:
-        from webis.core.rag.pipeline import RAGPipeline
-        from webis.apps.rag.tasks import TaskPipeline, PromptEnhancementTask
-        
-        rag = RAGPipeline()
-        tasks = TaskPipeline()
-        tasks.add_task(PromptEnhancementTask(llm_agent=llm))
-        
-        context = rag.get_retrieval_context(query)
-        results = tasks.execute(context)
-    """
-
-    def __init__(self, llm=None, **kwargs):
-        """
-        DEPRECATED: Use RAGPipeline + TaskPipeline instead.
-        
-        This is provided for backward compatibility with old code.
-        """
-        logger.warning(
-            "WebisRAGAgent is deprecated. Use RAGPipeline + TaskPipeline directly:\n"
-            "  from webis.core.rag.pipeline import RAGPipeline\n"
-            "  from webis.apps.rag.tasks import TaskPipeline, PromptEnhancementTask\n"
-            "  rag = RAGPipeline()\n"
-            "  tasks = TaskPipeline()\n"
-            "  tasks.add_task(PromptEnhancementTask(llm_agent=llm))"
-        )
-        self.llm = llm
-        self._kwargs = kwargs
-
-    def handle_query(self, query: str, **kwargs) -> Dict[str, Any]:
-        """
-        DEPRECATED: Use RAGPipeline.retrieve() + TaskPipeline.execute() instead.
-        """
-        from webis.core.rag.pipeline import RAGPipeline
-        from webis.apps.rag.tasks import TaskPipeline, PromptEnhancementTask
-        
-        logger.warning("handle_query() is deprecated. Use RAGPipeline + TaskPipeline directly")
-        
-        # Initialize pipeline
-        rag_pipeline = RAGPipeline(**self._kwargs)
-        tasks = TaskPipeline()
-        tasks.add_task(PromptEnhancementTask(llm_agent=self.llm))
-        
-        # Execute workflow
-        rag_context = rag_pipeline.get_retrieval_context(query)
-        task_result = tasks.execute(rag_context)
-        
-        return {
-            "query": query,
-            "rag_result": rag_context,
-            "task_results": task_result["task_results"],
-        }
-
-
-
-
 def example_usage():
     """
     Example: Using RAGPipeline + TaskPipeline (recommended approach)
@@ -222,7 +94,7 @@ def example_usage():
     print("\nStep 4: Saving results...\n")
     
     # Create output directory
-    output_dir = Path(__file__).resolve().parent.parent / "data"
+    output_dir = Path(__file__).resolve().parent.parent.parent / "data"
     output_dir.mkdir(parents=True, exist_ok=True)
     
     # Save full result

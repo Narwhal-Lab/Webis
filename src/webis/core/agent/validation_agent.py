@@ -137,7 +137,7 @@ class ValidationAgent:
             confidence = result.get("confidence", 0.0)
             reason = result.get("reason", "No reason provided")
             
-            logger.debug(f"Relevance check: {confidence:.2f} - {reason}")
+            print(f"Relevance check: {confidence:.2f} - {reason}")
             return is_relevant, confidence, reason
             
         except Exception as e:

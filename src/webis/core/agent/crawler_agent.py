@@ -9,15 +9,17 @@ and executing the search/crawl operation.
 from __future__ import annotations
 
 import json
-import logging
 import re
 from typing import List, Optional, Dict, Any
 
 from webis.core.llm.base import LLMRouter, get_default_router
-from webis.core.plugin import PluginRegistry, get_default_registry, SourcePlugin
+from webis.core.plugin import PluginRegistry, get_default_registry
 from webis.core.schema import WebisDocument, PipelineContext
 
-logger = logging.getLogger(__name__)
+
+# 移除logger相关导入和配置
+# import logging
+# logger = logging.getLogger(__name__)
 
 
 class CrawlerAgent:
@@ -57,10 +59,12 @@ class CrawlerAgent:
         Returns:
             List of fetched documents
         """
+        
         # 1. Get available tools
+        # print("self processors: ", self.registry.list_processors())
         all_sources = self.registry.list_sources()
         if not all_sources:
-            logger.warning("No source plugins registered!")
+            print("⚠️ WARNING: No source plugins registered!")  # 改为print
             return []
             
         # Filter excluded tools
@@ -68,10 +72,10 @@ class CrawlerAgent:
         sources = [s for s in all_sources if s not in excluded_tools]
         
         if not sources:
-            logger.warning(f"All sources excluded or unavailable! (Excluded: {excluded_tools})")
+            print(f"⚠️ WARNING: All sources excluded or unavailable! (Excluded: {excluded_tools})")  # 改为print
             # If all excluded, reset and try all
             sources = all_sources
-            logger.info("Resetting exclusions to allow retry.")
+            print("ℹ️ INFO: Resetting exclusions to allow retry.")  # 改为print
             
         source_descriptions = []
         for name in sources:
@@ -139,16 +143,16 @@ class CrawlerAgent:
             if not plan:
                 raise ValueError("No plan found in JSON")
                 
-            logger.info(f"Agent plan: {[step['tool'] for step in plan]}")
+            print(f"ℹ️ INFO: Agent plan: {[step['tool'] for step in plan]}")  # 改为print
             
         except Exception as e:
-            logger.error(f"LLM planning failed: {e}")
+            print(f"❌ ERROR: LLM planning failed: {e}")  # 改为print
             # Fallback strategy: Try all search engines
             fallback_tools = ["duckduckgo", "google_search", "baidu_search"]
             plan = [{"tool": t, "query": task, "reason": "Fallback"} for t in fallback_tools if t in sources]
             if not plan and sources: 
                  plan = [{"tool": sources[0], "query": task, "reason": "Last resort"}]
-            logger.info(f"Using fallback plan: {[step['tool'] for step in plan]}")
+            print(f"ℹ️ INFO: Using fallback plan: {[step['tool'] for step in plan]}")  # 改为print
 
         # 4. Execute plan until limit met
         all_docs = []
@@ -162,16 +166,16 @@ class CrawlerAgent:
             query = step.get("query", task)
             
             if tool_name not in sources:
-                logger.warning(f"Skipping unknown tool: {tool_name}")
+                print(f"⚠️ WARNING: Skipping unknown tool: {tool_name}")  # 改为print
                 continue
                 
             remaining = limit - len(all_docs)
-            logger.info(f"Executing {tool_name} (Goal: {remaining} docs)...")
+            print(f"ℹ️ INFO: Executing {tool_name} (Goal: {remaining} docs)...")  # 改为print
             
             try:
                 # Fetch slightly more to ensure quality
                 new_docs = self._execute_tool(tool_name, query, limit=remaining, context=context)
-                logger.info(f"  -> Fetched {len(new_docs)} docs")
+                print(f"  -> Fetched {len(new_docs)} docs")  # 改为print
                 
                 # Add unique docs
                 for doc in new_docs:
@@ -181,7 +185,7 @@ class CrawlerAgent:
                     all_docs.append(doc)
                     
             except Exception as e:
-                logger.error(f"Step {tool_name} failed: {e}")
+                print(f"❌ ERROR: Step {tool_name} failed: {e}")  # 改为print
                 continue
                 
         return all_docs
@@ -207,6 +211,6 @@ class CrawlerAgent:
                 if len(documents) >= limit:
                     break
         except Exception as e:
-            logger.error(f"Tool execution failed ({tool_name}): {e}")
+            print(f"❌ ERROR: Tool execution failed ({tool_name}): {e}")  # 改为print
             
         return documents

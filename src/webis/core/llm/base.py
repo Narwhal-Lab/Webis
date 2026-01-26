@@ -339,6 +339,8 @@ class LLMRouter:
         
         # Try primary model, then fallbacks
         models_to_try = [model_name] + [m for m in self._fallback_chain if m != model_name]
+
+        print(models_to_try)
         
         last_error = None
         for try_model in models_to_try:
@@ -361,6 +363,8 @@ class LLMRouter:
                 # Cache the response
                 if use_cache and self._cache:
                     self._cache.set(messages, try_model, response)
+
+                print("success try model: ", try_model)
                 
                 return response
                 

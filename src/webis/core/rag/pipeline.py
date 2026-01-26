@@ -20,8 +20,6 @@ from webis.core.rag.chunker import ChunkingPipeline, Chunk
 from webis.plugins.processors.embedding_plugin import EmbeddingGemmaPlugin
 from webis.core.rag.manager import RAGManager
 
-logger = logging.getLogger(__name__)
-
 
 class RAGPipeline:
     """
@@ -72,10 +70,10 @@ class RAGPipeline:
                 model_type=embedding_model_type,
                 device="cpu"
             )
-            logger.info(f"✓ Initialized {embedding_model_type} embedding processor")
+            print(f"✓ Initialized {embedding_model_type} embedding processor")
         except Exception as e:
             self.embedding_processor = None
-            logger.warning(f"Failed to initialize embedding processor: {e}")
+            print(f"⚠️ Failed to initialize embedding processor: {e}")
         
         # Initialize chunking pipeline
         self.chunking_pipeline = ChunkingPipeline(
@@ -117,7 +115,7 @@ class RAGPipeline:
             }
         """
         if not documents:
-            logger.warning("No documents to process")
+            print("⚠️ No documents to process")
             return {
                 "processed_count": 0,
                 "chunk_count": 0,
@@ -135,7 +133,7 @@ class RAGPipeline:
             source = doc.get("source", "unknown")
             
             if not content or not content.strip():
-                logger.debug(f"Skipping empty document from {source}")
+                print(f"[DEBUG] Skipping empty document from {source}")
                 continue
             
             # ===== CHUNKING =====
@@ -146,11 +144,11 @@ class RAGPipeline:
             chunks = self.chunking_pipeline.process_single(content, metadata=chunk_metadata)
             
             if not chunks:
-                logger.debug(f"Document {source} produced no chunks")
+                print(f"[DEBUG] Document {source} produced no chunks")
                 continue
             
             total_chunks += len(chunks)
-            logger.info(f"✓ Document {source} chunked into {len(chunks)} chunks")
+            print(f"✓ Document {source} chunked into {len(chunks)} chunks")
             
             # ===== EMBEDDING =====
             embeddings = []
@@ -165,9 +163,9 @@ class RAGPipeline:
                             embeddings.append(embedding_vectors[i])
                     
                     total_embeddings += len(embeddings)
-                    logger.info(f"✓ Generated {len(embeddings)} embeddings for {source}")
+                    print(f"✓ Generated {len(embeddings)} embeddings for {source}")
                 except Exception as e:
-                    logger.warning(f"Failed to generate embeddings: {e}")
+                    print(f"⚠️ Failed to generate embeddings: {e}")
             
             processed_docs.append({
                 "content": content,
@@ -184,9 +182,9 @@ class RAGPipeline:
             doc_ids = self.rag_manager.add_crawled_documents(processed_docs)
             try:
                 self.rag_manager.build_and_save()
-                logger.info(f"✓ Stored {len(doc_ids)} documents to RAG")
+                print(f"✓ Stored {len(doc_ids)} documents to RAG")
             except Exception as e:
-                logger.warning(f"Failed to build/save RAG: {e}")
+                print(f"⚠️ Failed to build/save RAG: {e}")
         
         return {
             "processed_count": len(processed_docs),
@@ -242,148 +240,77 @@ class RAGPipeline:
     def _fetch_from_webis(self, query: str) -> bool:
         """
         Fetch documents from webis pipeline using IntelligentPipeline when retrieval results are insufficient.
-        Updated to support newer webis plugin APIs while remaining backward compatible.
+        
+        Args:
+            query: Query text for webis search
+            
+        Returns:
+            True if documents were fetched and stored, False otherwise
         """
         print(f"\n⚠️  Insufficient documents in RAG")
         print(f"📡 Fetching from webis for query: '{query}'...\n")
 
-        # default requirements/context
-        requirements = {
-            "min_count": 5,
-            "relevance_threshold": 0.6,
-            "max_iterations": 2,
-        }
+        try:
+            from webis.core.intelligent_pipeline import IntelligentPipeline
+            from webis.core.schema import PipelineContext
+            from webis.plugins.sources import BaiduSearchPlugin
+        except ImportError as e:
+            print(f"❌ Failed to import IntelligentPipeline: {e}")
+            print("⚠️ Webis IntelligentPipeline not available; skipping web fetch")
+            return False
 
         try:
-            import importlib
-
-            result = None
-
-            # 优先尝试直接导入 internal IntelligentPipeline（如果包存在）
-            try:
-                ip_mod = importlib.import_module("webis.core.intelligent_pipeline")
-                schema_mod = importlib.import_module("webis.core.schema")
-                # Ensure plugins are registered
-                importlib.import_module("webis.plugins.sources")
-                importlib.import_module("webis.plugins.processors")
-                IntelligentPipeline = getattr(ip_mod, "IntelligentPipeline")
-                PipelineContext = getattr(schema_mod, "PipelineContext", None)
-
-                pipeline = IntelligentPipeline()
-                context = PipelineContext(task=query) if PipelineContext else None
-                try:
-                    result = pipeline.run(query=query, requirements=requirements, context=context)
-                except TypeError:
-                    result = pipeline.run(query, requirements, context)
-            except (ImportError, ModuleNotFoundError):
-                # 如果没有 webis 包，优雅退出（不打印 traceback）
-                try:
-                    webis_mod = importlib.import_module("webis")
-                except (ImportError, ModuleNotFoundError):
-                    logger.warning("Webis not available in environment; skipping web fetch")
-                    return False
-
-                # try to build a context if available on module
-                try:
-                    PipelineContext = getattr(webis_mod, "PipelineContext", None)
-                    context = PipelineContext(task=query) if PipelineContext else None
-                except Exception:
-                    context = None
-
-                result = None
-
-                # Try module/class-level IntelligentPipeline
-                PipelineCls = None
-                if hasattr(webis_mod, "IntelligentPipeline"):
-                    PipelineCls = getattr(webis_mod, "IntelligentPipeline")
-                elif hasattr(webis_mod, "pipeline") and hasattr(webis_mod.pipeline, "IntelligentPipeline"):
-                    PipelineCls = getattr(webis_mod.pipeline, "IntelligentPipeline")
-
-                if PipelineCls:
-                    pipeline = PipelineCls()
-                    try:
-                        result = pipeline.run(query=query, requirements=requirements, context=context)
-                    except TypeError:
-                        result = pipeline.run(query, requirements, context)
-                else:
-                    # Try client-style APIs or module-level fetchers
-                    client = None
-                    if hasattr(webis_mod, "Client"):
-                        client = getattr(webis_mod, "Client")()
-                    elif hasattr(webis_mod, "WebisClient"):
-                        client = getattr(webis_mod, "WebisClient")()
-
-                    if client:
-                        if hasattr(client, "fetch_documents"):
-                            result = client.fetch_documents(query=query, min_count=requirements["min_count"], relevance_threshold=requirements["relevance_threshold"])
-                        elif hasattr(client, "search"):
-                            try:
-                                result = client.search(query=query, limit=requirements["min_count"])
-                            except TypeError:
-                                result = client.search(query)
-                        elif hasattr(client, "crawl"):
-                            result = client.crawl(query=query, max_iterations=requirements["max_iterations"])
-                        else:
-                            logger.warning("Unsupported webis Client API")
-                            return False
-                    else:
-                        if hasattr(webis_mod, "fetch_documents"):
-                            result = webis_mod.fetch_documents(query=query, **requirements)
-                        elif hasattr(webis_mod, "search"):
-                            try:
-                                result = webis_mod.search(query=query, limit=requirements["min_count"])
-                            except TypeError:
-                                result = webis_mod.search(query)
-                        else:
-                            logger.warning("No supported webis API found in module")
-                            return False
-
-            # Normalize result -> documents (list) and stats (dict)
-            documents = []
-            stats = {}
-            if isinstance(result, dict):
-                documents = result.get("documents") or result.get("docs") or result.get("results") or []
-                stats = result.get("stats", {})
-            elif isinstance(result, list):
-                documents = result
-                stats = {}
-            else:
-                documents = getattr(result, "documents", None) or getattr(result, "docs", None) or []
-                stats = getattr(result, "stats", {}) or {}
-
+            # Create pipeline context with the query as task
+            context = PipelineContext(task=query)
+            
+            # Initialize intelligent pipeline with agent-based validation
+            pipeline = IntelligentPipeline()
+            
+            # Define requirements for document fetching
+            requirements = {
+                'min_count': 5,
+                'relevance_threshold': 0.6,
+                'max_iterations': 4,
+            }
+            
+            # Run intelligent pipeline with automatic re-crawling based on validation
+            result = pipeline.run(
+                query=query,
+                requirements=requirements,
+                context=context
+            )
+            
+            documents = result.get("documents", [])
+            stats = result.get("stats", {})
+            
             if not documents:
-                logger.warning("Webis returned no documents")
+                print("⚠️ Webis returned no documents")
                 return False
-
-            print(f"\n✓ Webis fetched {len(documents)} documents")
+            
+            print(f"\n✓ Webis fetched {len(documents)} validated documents")
             if stats:
                 print(f"   Stats: {stats}\n")
-
-            # Normalize documents into RAG format
+            
+            # Convert WebisDocument objects to RAG format
             rag_documents = []
             for doc in documents:
-                if isinstance(doc, dict):
-                    clean_content = doc.get("clean_content") or doc.get("content", "")
-                    meta = doc.get("meta") or doc.get("metadata") or {}
-                    validation_score = doc.get("validation_score", doc.get("score", 0.0))
-                else:
-                    clean_content = getattr(doc, "clean_content", None) or getattr(doc, "content", "")
-                    meta = getattr(doc, "meta", None) or getattr(doc, "metadata", None) or {}
-                    validation_score = getattr(doc, "validation_score", getattr(doc, "score", 0.0))
-
+                # Extract content - use clean_content if available, fallback to content
+                clean_content = getattr(doc, "clean_content", None) or getattr(doc, "content", "")
+                
                 if not clean_content or not str(clean_content).strip():
-                    logger.debug("Skipping document with empty content")
+                    print("[DEBUG] Skipping document with empty content")
                     continue
-
-                if isinstance(meta, dict):
-                    source = meta.get("url") or meta.get("source") or meta.get("title") or "unknown"
-                    title = meta.get("title", "")
-                    source_plugin = meta.get("source_plugin") or meta.get("plugin") or "unknown"
-                else:
-                    source = getattr(meta, "url", None) or getattr(meta, "source", None) or getattr(meta, "title", "unknown")
-                    title = getattr(meta, "title", "")
-                    source_plugin = getattr(meta, "source_plugin", None) or getattr(meta, "plugin", None) or "unknown"
-
+                
+                # Extract metadata
+                source = "unknown"
+                title = ""
+                source_plugin = "unknown"
+                
+                if hasattr(doc, "meta") and doc.meta:
+                    source = getattr(doc.meta, "url", None) or getattr(doc.meta, "source", None) or getattr(doc.meta, "title", "unknown")
+                    title = getattr(doc.meta, "title", "")
+                    source_plugin = getattr(doc.meta, "source_plugin", None) or getattr(doc.meta, "plugin", "unknown")
+                
                 rag_documents.append({
                     "content": clean_content,
                     "source": source,
@@ -391,25 +318,28 @@ class RAGPipeline:
                     "structured_data": None,
                     "metadata": {
                         "from_webis": True,
-                        "webis_validation_score": validation_score or 0.0,
+                        "webis_validation_score": getattr(doc, "validation_score", 0.0),
                         "source_plugin": source_plugin,
                         "webis_stats": stats,
                         "timestamp": datetime.now().isoformat(),
                     }
                 })
-
+            
             if rag_documents:
                 print(f"Processing and storing {len(rag_documents)} documents to RAG...\n")
+                
                 store_result = self.process_and_store_documents(rag_documents, query=query)
+                
                 print(f"✓ Stored {store_result['processed_count']} documents")
                 print(f"✓ Generated {store_result['chunk_count']} chunks")
                 print(f"✓ Generated {store_result['embedding_count']} embeddings\n")
+                
                 return True
-
+            
             return False
-
+            
         except Exception as e:
-            logger.error(f"Failed to fetch from webis: {e}", exc_info=True)
+            print(f"❌ Failed to fetch from webis: {e}")
             return False
     
     def _should_fetch_webis(self, retrieval_result: Dict[str, Any]) -> bool:
@@ -495,17 +425,17 @@ class RAGPipeline:
         """Save RAG state to disk"""
         try:
             self.rag_manager.build_and_save()
-            logger.info(f"✓ RAG Pipeline saved to {self.rag_store_path}")
+            print(f"✓ RAG Pipeline saved to {self.rag_store_path}")
         except Exception as e:
-            logger.warning(f"Failed to save RAG: {e}")
+            print(f"⚠️ Failed to save RAG: {e}")
     
     def load(self):
         """Load RAG state from disk"""
         try:
             self.rag_manager._try_load()
-            logger.info(f"✓ RAG Pipeline loaded from {self.rag_store_path}")
+            print(f"✓ RAG Pipeline loaded from {self.rag_store_path}")
         except Exception as e:
-            logger.warning(f"Failed to load RAG: {e}")
+            print(f"⚠️ Failed to load RAG: {e}")
     
     def get_stats(self) -> Dict[str, Any]:
         """Get RAG pipeline statistics"""
