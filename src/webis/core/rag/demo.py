@@ -32,21 +32,21 @@ def example_usage():
     Saves all results to JSON files for inspection.
     """
     from webis.core.rag.pipeline import RAGPipeline
-    from webis.apps.rag.tasks import TaskPipeline, PromptEnhancementTask
+    from webis.apps.rag.tasks import TaskPipeline, ReportGenerationTask
     from datetime import datetime
     
     # Initialize components
     rag_pipeline = RAGPipeline(
         rag_store_path="./data/rag_store.json",
         embedding_model_type="gemma",
-        top_k=3,
+        top_k=5,
     )
     
     task_pipeline = TaskPipeline()
-    task_pipeline.add_task(PromptEnhancementTask(llm_agent=None))
+    task_pipeline.add_task(ReportGenerationTask(include_raw_data=True))
     
     # Query workflow
-    query = "tell me the recent news of china economy"
+    query = "Summarize the recent news about the stock market for me."
     
     print("=" * 70)
     print("RAG EXAMPLE USAGE")
@@ -55,7 +55,8 @@ def example_usage():
     
     # Step 1: Get RAG context
     print("Step 1: Retrieving context from RAG...")
-    rag_context = rag_pipeline.get_retrieval_context(query, top_k=3)
+    rag_context = rag_pipeline.get_retrieval_context(query, top_k=5)
+    print(rag_context)
     print(f"✓ Retrieved {rag_context['metadata']['retrieval_count']} documents")
     
     # Step 2: Execute tasks
@@ -118,11 +119,12 @@ def example_usage():
     
     # Save enhanced prompt if available
     for task_result in result['task_results']:
-        if task_result['task_name'] == 'prompt_enhancement' and task_result.get('enhanced_prompt'):
-            enhanced_prompt_path = output_dir / f"example_usage_enhanced_prompt_{timestamp}.txt"
-            with open(enhanced_prompt_path, 'w', encoding='utf-8') as f:
-                f.write(task_result['enhanced_prompt'])
-            print(f"✓ Enhanced prompt saved: {enhanced_prompt_path}")
+        if task_result['task_name'] == 'report_generation' and task_result.get('report_content'):
+            report_path = output_dir / f"example_usage_report_{timestamp}.md"
+            with open(report_path, 'w', encoding='utf-8') as f:
+                f.write(task_result['report_content'])
+            print(f"✓ Report saved: {report_path}")
+            print(f"  Report stats: {task_result.get('stats', {})}")
     
     print("\n" + "=" * 70)
     print("✓ EXAMPLE USAGE COMPLETED")

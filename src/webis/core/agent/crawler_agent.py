@@ -15,6 +15,7 @@ from typing import List, Optional, Dict, Any
 from webis.core.llm.base import LLMRouter, get_default_router
 from webis.core.plugin import PluginRegistry, get_default_registry
 from webis.core.schema import WebisDocument, PipelineContext
+from webis.plugins.sources.bright_data_plugin import BrightDataPlugin
 
 
 # 移除logger相关导入和配置
@@ -121,60 +122,52 @@ class CrawlerAgent:
         """
         
         plan = []
-        try:
-            response = self.router.chat(
-                [{"role": "user", "content": prompt}],
-                model=None, # Use primary
-                temperature=0.0,
-                supports_json_mode=True
-            )
-            content = response.content
+        # try:
+        #     response = self.router.chat(
+        #         [{"role": "user", "content": prompt}],
+        #         model=None, # Use primary
+        #         temperature=0.0,
+        #         supports_json_mode=True
+        #     )
+        #     content = response.content
             
-            # 3. Parse selection
-            match = re.search(r"\{.*\}", content, re.DOTALL)
-            if match:
-                data = json.loads(match.group(0))
-                plan = data.get("plan", [])
+        #     # 3. Parse selection
+        #     match = re.search(r"\{.*\}", content, re.DOTALL)
+        #     if match:
+        #         data = json.loads(match.group(0))
+        #         plan = data.get("plan", [])
                 
-                # Support legacy single-tool format fallback
-                if not plan and "tool" in data:
-                    plan = [data]
+        #         # Support legacy single-tool format fallback
+        #         if not plan and "tool" in data:
+        #             plan = [data]
                     
-            if not plan:
-                raise ValueError("No plan found in JSON")
+        #     if not plan:
+        #         raise ValueError("No plan found in JSON")
                 
-            print(f"ℹ️ INFO: Agent plan: {[step['tool'] for step in plan]}")  # 改为print
+        #     print(f"ℹ️ INFO: Agent plan: {[step['tool'] for step in plan]}")  # 改为print
             
-        except Exception as e:
-            print(f"❌ ERROR: LLM planning failed: {e}")  # 改为print
-            # Fallback strategy: Try all search engines
-            fallback_tools = ["duckduckgo", "google_search", "baidu_search"]
-            plan = [{"tool": t, "query": task, "reason": "Fallback"} for t in fallback_tools if t in sources]
-            if not plan and sources: 
-                 plan = [{"tool": sources[0], "query": task, "reason": "Last resort"}]
-            print(f"ℹ️ INFO: Using fallback plan: {[step['tool'] for step in plan]}")  # 改为print
+        # except Exception as e:
+        #     print(f"❌ ERROR: LLM planning failed: {e}")  # 改为print
+        #     # Fallback strategy: Try all search engines
+        #     fallback_tools = ["duckduckgo", "google_search", "baidu_search"]
+        #     plan = [{"tool": t, "query": task, "reason": "Fallback"} for t in fallback_tools if t in sources]
+        #     if not plan and sources: 
+        #          plan = [{"tool": sources[0], "query": task, "reason": "Last resort"}]
+        #     print(f"ℹ️ INFO: Using fallback plan: {[step['tool'] for step in plan]}")  # 改为print
 
         # 4. Execute plan until limit met
         all_docs = []
         self.last_used_tools = [step['tool'] for step in plan]
-        
-        for step in plan:
-            if len(all_docs) >= limit:
-                break
-                
-            tool_name = step.get("tool")
-            query = step.get("query", task)
-            
-            if tool_name not in sources:
-                print(f"⚠️ WARNING: Skipping unknown tool: {tool_name}")  # 改为print
-                continue
-                
-            remaining = limit - len(all_docs)
-            print(f"ℹ️ INFO: Executing {tool_name} (Goal: {remaining} docs)...")  # 改为print
-            
-            try:
-                # Fetch slightly more to ensure quality
-                new_docs = self._execute_tool(tool_name, query, limit=remaining, context=context)
+
+        tool_name = "bright_data"
+        if len(all_docs) >= limit:
+            return all_docs
+        print(f"ℹ️ INFO: Executing {tool_name} (Goal: {limit} docs)...")  # 改为print
+        try:
+                # 直接实例化并调用 BrightDataPlugin
+                plugin = BrightDataPlugin()
+                plugin.initialize(context)
+                new_docs = list(plugin.fetch(task, limit=limit, context=context))
                 print(f"  -> Fetched {len(new_docs)} docs")  # 改为print
                 
                 # Add unique docs
@@ -183,12 +176,44 @@ class CrawlerAgent:
                         break
                     # Simple duplicate check by URL (if available) or content hash could go here
                     all_docs.append(doc)
+                plugin.cleanup()
                     
-            except Exception as e:
-                print(f"❌ ERROR: Step {tool_name} failed: {e}")  # 改为print
-                continue
-                
+        except Exception as e:
+            print(f"❌ ERROR: Step {tool_name} failed: {e}")  # 改为print
+        
         return all_docs
+        
+        # for step in plan:
+        #     if len(all_docs) >= limit:
+        #         break
+                
+        #     tool_name = step.get("tool")
+        #     query = step.get("query", task)
+            
+        #     if tool_name not in sources:
+        #         print(f"⚠️ WARNING: Skipping unknown tool: {tool_name}")  # 改为print
+        #         continue
+                
+        #     remaining = limit - len(all_docs)
+        #     print(f"ℹ️ INFO: Executing {tool_name} (Goal: {remaining} docs)...")  # 改为print
+            
+        #     try:
+        #         # Fetch slightly more to ensure quality
+        #         new_docs = self._execute_tool(tool_name, query, limit=remaining, context=context)
+        #         print(f"  -> Fetched {len(new_docs)} docs")  # 改为print
+                
+        #         # Add unique docs
+        #         for doc in new_docs:
+        #             if len(all_docs) >= limit:
+        #                 break
+        #             # Simple duplicate check by URL (if available) or content hash could go here
+        #             all_docs.append(doc)
+                    
+        #     except Exception as e:
+        #         print(f"❌ ERROR: Step {tool_name} failed: {e}")  # 改为print
+        #         continue
+                
+        # return all_docs
 
     def _execute_tool(
         self, 

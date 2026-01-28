@@ -270,7 +270,7 @@ class RAGPipeline:
             requirements = {
                 'min_count': 5,
                 'relevance_threshold': 0.6,
-                'max_iterations': 4,
+                'max_iterations': 3,
             }
             
             # Run intelligent pipeline with automatic re-crawling based on validation

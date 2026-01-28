@@ -148,6 +148,7 @@ class IntelligentPipeline:
             
             # Step 3: Clean documents
             print(f"🧹 Cleaning {len(raw_docs)} documents...")
+            # print(raw_docs)
             cleaned_docs = self._clean_documents(raw_docs, context)
             print(f"   Cleaned {len(cleaned_docs)} documents")
             
@@ -161,7 +162,7 @@ class IntelligentPipeline:
                 is_relevant, score, reason = self.validation_agent.check_relevance(
                     doc, query, intent
                 )
-                
+                print()
                 # Make decision
                 if is_relevant and score >= relevance_threshold:
                     state.add_decision(doc, "ACCEPT", f"Score: {score:.2f} - {reason}")

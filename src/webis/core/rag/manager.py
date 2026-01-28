@@ -141,7 +141,7 @@ class RAGManager:
             "documents": [
                 {
                     "source": doc.source,
-                    "content": doc.content[:200] + "..." if len(doc.content) > 200 else doc.content,
+                    "content": doc.content,  # 返回完整内容，不截断
                     "structured_data": doc.structured_data,
                 }
                 for doc in context_data["documents"]

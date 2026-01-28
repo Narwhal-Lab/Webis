@@ -402,15 +402,13 @@ class ReportGenerationTask(RAGTask):
                     markdown_lines.append(f"- {finding}")
             markdown_lines.append("")
             
-            # Source References
+            # Source References Summary
             markdown_lines.append("## Source References")
             markdown_lines.append("")
             for i, (doc, score) in enumerate(zip(retrieved_docs, scores), 1):
                 source = doc.get("source", "Unknown")
-                content_preview = doc.get("content", "")[:80]  # Shorter preview
                 markdown_lines.append(f"[{i}] **{source}** (Relevance: {score:.3f})")
-                markdown_lines.append(f"    {content_preview}...")
-                markdown_lines.append("")
+            markdown_lines.append("")
             
             # Raw Data (optional)
             if self.include_raw_data:
@@ -418,7 +416,8 @@ class ReportGenerationTask(RAGTask):
                 markdown_lines.append("")
                 markdown_lines.append("### Retrieved Context")
                 markdown_lines.append("```")
-                markdown_lines.append(context_text[:500])
+                # Complete context, no truncation
+                markdown_lines.append(context_text)
                 markdown_lines.append("```")
                 markdown_lines.append("")
             
@@ -473,16 +472,16 @@ class ReportGenerationTask(RAGTask):
             }
     
     def _generate_summary(self, query: str, documents: List[Dict[str, Any]]) -> str:
-        """Generate concise summary using LLM with source attribution."""
+        """Generate concise summary using LLM with complete document content."""
         if not self.llm:
             return self._extract_summary_from_docs(documents)
         
         try:
-            # Prepare document chunks with source info
+            # Prepare document chunks with FULL source info - no truncation
             doc_chunks = []
-            for doc in documents[:5]:  # Top 5 docs only
+            for doc in documents:  # Use ALL documents
                 source = doc.get("source", "Unknown")
-                content = doc.get("content", "")[:300]  # Limit to 300 chars per doc
+                content = doc.get("content", "")  # Complete content, no truncation
                 doc_chunks.append(f"[Source: {source}]\n{content}")
             
             docs_text = "\n\n".join(doc_chunks)
@@ -531,16 +530,16 @@ class ReportGenerationTask(RAGTask):
             return self._extract_summary_from_docs(documents)
     
     def _generate_detailed_content(self, query: str, documents: List[Dict[str, Any]]) -> str:
-        """Generate detailed analysis using LLM with source attribution."""
+        """Generate detailed analysis using LLM with complete document content."""
         if not self.llm:
             return self._format_documents_concise(documents)
         
         try:
-            # Prepare high-quality document chunks
+            # Prepare high-quality document chunks with FULL content - no truncation
             doc_chunks = []
-            for doc in documents[:3]:  # Top 3 docs for detailed analysis
+            for doc in documents:  # Use ALL documents
                 source = doc.get("source", "Unknown")
-                content = doc.get("content", "")[:400]
+                content = doc.get("content", "")  # Complete content, no truncation
                 doc_chunks.append(f"[Source: {source}]\n{content}")
             
             docs_text = "\n\n".join(doc_chunks)
@@ -580,15 +579,15 @@ Detailed Analysis:"""
             return self._format_documents_concise(documents)
     
     def _extract_key_findings(self, query: str, documents: List[Dict[str, Any]]) -> List[str]:
-        """Extract key findings with source attribution."""
+        """Extract key findings with source attribution using complete document content."""
         if not self.llm:
             return self._extract_key_findings_simple(documents)
         
         try:
             doc_chunks = []
-            for doc in documents[:4]:
+            for doc in documents:  # Use ALL documents
                 source = doc.get("source", "Unknown")
-                content = doc.get("content", "")[:300]
+                content = doc.get("content", "")  # Complete content, no truncation
                 doc_chunks.append(f"[Source: {source}]\n{content}")
             
             docs_text = "\n\n".join(doc_chunks)
@@ -636,61 +635,46 @@ Key Findings:"""
             return self._extract_key_findings_simple(documents)
     
     def _extract_key_findings_simple(self, documents: List[Dict[str, Any]]) -> List[str]:
-        """Simple fallback for key findings extraction."""
+        """Simple fallback for key findings extraction - no truncation."""
         findings = []
-        for i, doc in enumerate(documents[:5], 1):
+        for i, doc in enumerate(documents, 1):  # Use ALL documents
             source = doc.get("source", "Unknown")
             content = doc.get("content", "")
             
-            # Extract first meaningful sentence
+            # Extract first complete sentence without length limit
             sentences = content.split('.')
-            for sentence in sentences:
-                clean = sentence.strip()
-                if len(clean) > 20 and len(clean) < 150:
-                    findings.append(f"[Source: {source}] {clean}")
-                    break
+            if sentences and sentences[0].strip():
+                first_sentence = sentences[0].strip()
+                findings.append(f"[Source: {source}] {first_sentence}")
         
-        return findings[:5]
+        return findings
     
     def _extract_summary(self, context: str, length: int = 300) -> str:
-        """Extract summary from context."""
-        if len(context) > length:
-            return context[:length] + "..."
+        """Extract summary from context - return complete content."""
         return context
     
     def _extract_summary_from_docs(self, documents: List[Dict[str, Any]]) -> str:
-        """Extract summary from documents without LLM."""
+        """Extract comprehensive summary from documents without LLM - complete content, no truncation."""
         summaries = []
-        for doc in documents[:3]:
+        for doc in documents:  # Use ALL documents
             source = doc.get("source", "Unknown")
-            content = doc.get("content", "")
+            content = doc.get("content", "")  # Complete content, no truncation
             
-            # Get first 150 chars as summary
-            preview = content[:150] if len(content) > 150 else content
-            summaries.append(f"[Source: {source}] {preview}")
+            summaries.append(f"**{source}**\n{content}")
         
         return "\n\n".join(summaries)
     
     def _format_documents_concise(self, documents: List[Dict[str, Any]]) -> str:
-        """Format documents into concise readable text with source attribution."""
+        """Format documents into detailed readable text with complete content."""
         lines = []
         
-        for i, doc in enumerate(documents[:5], 1):  # Limit to top 5
+        for i, doc in enumerate(documents, 1):  # Use ALL documents
             source = doc.get("source", "Unknown")
-            content = doc.get("content", "")
+            content = doc.get("content", "")  # Complete content, no truncation
             
-            # Extract key sentences (first 2-3 sentences max)
-            sentences = content.split('.')
-            key_content = ""
-            for sentence in sentences[:2]:
-                if sentence.strip():
-                    key_content += sentence.strip() + "."
-            
-            if not key_content:
-                key_content = content[:200]
-            
-            lines.append(f"### [Source: {source}]")
-            lines.append(key_content if len(key_content) <= 300 else key_content[:300] + "...")
+            lines.append(f"### [{i}] {source}")
+            lines.append("")
+            lines.append(content)  # Display full content as-is
             lines.append("")
         
         return "\n".join(lines)
