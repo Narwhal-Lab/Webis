@@ -311,6 +311,10 @@ class ReportGenerationTask(RAGTask):
         """
         Generate report from RAG context.
         
+        Two-stage process:
+        1. Generate report-specific prompt based on query using LLM
+        2. Generate final report using generated prompt + RAG context
+        
         Args:
             rag_context: RAG retrieval context
             
@@ -328,6 +332,7 @@ class ReportGenerationTask(RAGTask):
             from datetime import datetime
             from pathlib import Path
             import json
+            from webis.core.llm.base import get_default_router
             
             query = rag_context.get("query", "")
             retrieved_docs = rag_context.get("retrieved_documents", [])
@@ -335,7 +340,23 @@ class ReportGenerationTask(RAGTask):
             metadata = rag_context.get("metadata", {})
             scores = rag_context.get("scores", [])
             
-            # Build markdown content
+            # ============ STAGE 1: Generate Report Prompt ============
+            # Use LLM to create a customized prompt for report generation based on the query
+            report_prompt = self._generate_report_prompt(query)
+            logger.info(f"Generated report prompt:\n{report_prompt}")
+            
+            # ============ STAGE 2: Generate Report using Prompt + Context ============
+            # Prepare context text from all documents
+            context_for_report = self._prepare_context_from_documents(retrieved_docs)
+            
+            # Generate final report using LLM with the generated prompt and context
+            report_content = self._generate_report_with_prompt(
+                report_prompt, 
+                query, 
+                context_for_report
+            )
+            
+            # ============ Format as Markdown ============
             markdown_lines = []
             
             # Header
@@ -349,7 +370,7 @@ class ReportGenerationTask(RAGTask):
             markdown_lines.append(f"> {query}")
             markdown_lines.append("")
             
-            # Metadata
+            # Overview
             markdown_lines.append("## Overview")
             markdown_lines.append(
                 f"- **Documents Retrieved:** {metadata.get('retrieval_count', 0)}\n"
@@ -358,51 +379,12 @@ class ReportGenerationTask(RAGTask):
             )
             markdown_lines.append("")
             
-            # Executive Summary
-            markdown_lines.append("## Executive Summary")
-            if self.llm and retrieved_docs:
-                try:
-                    summary = self._generate_summary(query, retrieved_docs)
-                    markdown_lines.append(summary)
-                except Exception as e:
-                    logger.warning(f"LLM summary generation failed: {e}")
-                    markdown_lines.append(self._extract_summary_from_docs(retrieved_docs))
-            else:
-                markdown_lines.append(self._extract_summary_from_docs(retrieved_docs))
+            # Generated Report
+            markdown_lines.append("## Report")
+            markdown_lines.append(report_content)
             markdown_lines.append("")
             
-            # Detailed Findings
-            markdown_lines.append("## Detailed Findings")
-            if self.llm and retrieved_docs:
-                try:
-                    detailed = self._generate_detailed_content(query, retrieved_docs)
-                    markdown_lines.append(detailed)
-                except Exception as e:
-                    logger.warning(f"LLM content generation failed: {e}")
-                    markdown_lines.append(self._format_documents_concise(retrieved_docs))
-            else:
-                markdown_lines.append(self._format_documents_concise(retrieved_docs))
-            markdown_lines.append("")
-            
-            # Key Findings
-            markdown_lines.append("## Key Findings")
-            if self.llm and retrieved_docs:
-                try:
-                    findings = self._extract_key_findings(query, retrieved_docs)
-                    for finding in findings:
-                        markdown_lines.append(f"- {finding}")
-                except Exception as e:
-                    logger.warning(f"Failed to extract findings: {e}")
-                    findings = self._extract_key_findings_simple(retrieved_docs)
-                    for finding in findings:
-                        markdown_lines.append(f"- {finding}")
-            else:
-                findings = self._extract_key_findings_simple(retrieved_docs)
-                for finding in findings:
-                    markdown_lines.append(f"- {finding}")
-            markdown_lines.append("")
-            
-            # Source References Summary
+            # Source References
             markdown_lines.append("## Source References")
             markdown_lines.append("")
             for i, (doc, score) in enumerate(zip(retrieved_docs, scores), 1):
@@ -411,15 +393,14 @@ class ReportGenerationTask(RAGTask):
             markdown_lines.append("")
             
             # Raw Data (optional)
-            if self.include_raw_data:
-                markdown_lines.append("## Raw Data")
-                markdown_lines.append("")
-                markdown_lines.append("### Retrieved Context")
-                markdown_lines.append("```")
-                # Complete context, no truncation
-                markdown_lines.append(context_text)
-                markdown_lines.append("```")
-                markdown_lines.append("")
+            # if self.include_raw_data:
+            #     markdown_lines.append("## Raw Data")
+            #     markdown_lines.append("")
+            #     markdown_lines.append("### Retrieved Context")
+            #     markdown_lines.append("```")
+            #     markdown_lines.append(context_text)
+            #     markdown_lines.append("```")
+            #     markdown_lines.append("")
             
             # Metadata
             markdown_lines.append("## Metadata")
@@ -471,7 +452,109 @@ class ReportGenerationTask(RAGTask):
                 "error": str(e)
             }
     
-    def _generate_summary(self, query: str, documents: List[Dict[str, Any]]) -> str:
+    def _generate_report_prompt(self, query: str) -> str:
+        """
+        STAGE 1: Generate a customized report-generation prompt based on the query.
+        Uses project's default LLM router to create an appropriate prompt template.
+        """
+        from webis.core.llm.base import get_default_router
+        
+        try:
+            router = get_default_router()
+            
+            prompt = f"""You are a prompt engineering expert. Based on the following user query, generate a detailed and effective prompt that will guide an LLM to produce a comprehensive research report.
+
+The generated prompt should:
+1. Be clear and specific about the report objective
+2. Define the report structure (sections, key elements to include)
+3. Specify quality requirements (information density, citation format, etc.)
+4. Guide the LLM on how to synthesize information from multiple sources
+5. Include instructions for sourcing and attribution
+
+User Query: {query}
+
+Generate a professional report-generation prompt that can be used with retrieved documents to produce a high-quality research report. Return ONLY the prompt text, no explanations."""
+            
+            response = router.chat(
+                [{"role": "user", "content": prompt}],
+                model=None,  # Use default primary model
+                temperature=0.7,
+                max_tokens=800
+            )
+            
+            return response.content
+            
+        except Exception as e:
+            logger.warning(f"Failed to generate report prompt with LLM: {e}")
+            # Fallback prompt if LLM fails
+            return f"""Generate a comprehensive research report addressing the following query:
+
+Query: {query}
+
+Requirements:
+1. Analyze all provided documents thoroughly
+2. Synthesize information across sources
+3. Cite sources explicitly in [Source: name] format
+4. Organize findings into clear sections
+5. Maintain high information density while ensuring clarity
+6. Include key insights and conclusions based on the documents
+
+Structure your report with:
+- Executive Summary
+- Main Findings
+- Detailed Analysis by Topic
+- Conclusions and Implications
+- Source References"""
+    
+    def _prepare_context_from_documents(self, documents: List[Dict[str, Any]]) -> str:
+        """Prepare complete context text from all documents."""
+        context_parts = []
+        for i, doc in enumerate(documents, 1):
+            source = doc.get("source", "Unknown")
+            content = doc.get("content", "")
+            context_parts.append(f"[Document {i}] Source: {source}\n{content}\n")
+        
+        return "\n---\n".join(context_parts)
+    
+    def _generate_report_with_prompt(
+        self, 
+        report_prompt: str, 
+        query: str, 
+        context: str
+    ) -> str:
+        """
+        STAGE 2: Generate the final report using the generated prompt + context.
+        """
+        from webis.core.llm.base import get_default_router
+        
+        try:
+            router = get_default_router()
+            
+            # Combine the generated prompt with the context
+            full_prompt = f"""{report_prompt}
+
+---
+
+## Retrieved Documents Context
+
+{context}
+
+---
+
+Generate the research report now."""
+            
+            response = router.chat(
+                [{"role": "user", "content": full_prompt}],
+                model=None,  # Use default primary model
+                temperature=0.7,
+                max_tokens=4000
+            )
+            
+            return response.content
+            
+        except Exception as e:
+            logger.error(f"Failed to generate report: {e}")
+            raise
         """Generate concise summary using LLM with complete document content."""
         if not self.llm:
             return self._extract_summary_from_docs(documents)
