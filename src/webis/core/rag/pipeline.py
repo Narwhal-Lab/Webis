@@ -253,7 +253,7 @@ class RAGPipeline:
         try:
             from webis.core.intelligent_pipeline import IntelligentPipeline
             from webis.core.schema import PipelineContext
-            from webis.plugins.sources import BaiduSearchPlugin
+            from webis.plugins.sources import BrightDataPlugin
         except ImportError as e:
             print(f"❌ Failed to import IntelligentPipeline: {e}")
             print("⚠️ Webis IntelligentPipeline not available; skipping web fetch")
@@ -355,14 +355,20 @@ class RAGPipeline:
         doc_count = len(retrieval_result.get("documents", []))
         scores = retrieval_result.get("scores", [])
         
+        # Debug info
+        print(f"[DEBUG] _should_fetch_webis - doc_count: {doc_count}, scores: {scores}")
+        
         # Check if document count is below threshold
         if doc_count < self.min_doc_threshold:
+            print(f"[DEBUG] Fetching webis: doc_count ({doc_count}) < min_doc_threshold ({self.min_doc_threshold})")
             return True
         
         # Check if top score is below threshold
         if scores and min(scores) < self.min_score_threshold:
+            print(f"[DEBUG] Fetching webis: min_score ({min(scores)}) < threshold ({self.min_score_threshold})")
             return True
         
+        print(f"[DEBUG] Not fetching webis - conditions not met")
         return False
     
     def get_retrieval_context(

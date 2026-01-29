@@ -109,11 +109,11 @@ class IntelligentPipeline:
             crawl_limit = shortage + 5  # Get a few extra to account for rejections
             print(f"📥 Crawling {crawl_limit} documents...")
             
-            # Identify tools that failed in previous iterations (fetched 0 docs)
-            # We track this in a simple way for now
-            excluded_tools = state.failed_tools
+            # Exclude tools that were used in the previous iteration
+            # to diversify data sources across iterations
+            excluded_tools = state.used_tools_previous_iteration if iteration > 0 else []
             if excluded_tools:
-                print(f"   Excluding failed tools: {excluded_tools}")
+                print(f"   Excluding tools used in previous iteration: {excluded_tools}")
 
             raw_docs = self.crawler_agent.run(
                 task=query,
@@ -122,13 +122,11 @@ class IntelligentPipeline:
                 excluded_tools=excluded_tools
             )
             
-            # Update failed tools tracking
-            # This is tricky because we don't know exactly which tool produced which doc easily
-            # without inspecting metadata.
-            # Simple heuristic: If raw_docs is empty, ALL tools tried in this run failed.
-            # But CrawlerAgent tries multiple tools.
-            # BETTER APPROACH: CrawlerAgent should return metadata about which tools failed.
-            # For now, let's look at the docs we got.
+            # Track tools used in this iteration
+            tools_used_this_iteration = self.crawler_agent.last_used_tools
+            print(f"   Tools used in this iteration: {tools_used_this_iteration}")
+            
+            # Collect successful tools from the fetched documents
             successful_tools = set()
             for doc in raw_docs:
                 if doc.meta and doc.meta.source_plugin:
@@ -136,15 +134,11 @@ class IntelligentPipeline:
             
             if not raw_docs:
                 print(f"❌ No documents fetched in iteration {iteration + 1}")
-                # Mark strategy as failed
-                failed = self.crawler_agent.last_used_tools
-                if failed:
-                    print(f"   Marking tools as failed for next iteration: {failed}")
-                    state.failed_tools.extend(failed)
-                    # Deduplicate
-                    state.failed_tools = list(set(state.failed_tools))
             else:
-                 print(f"   Fetched {len(raw_docs)} raw documents from: {successful_tools}")
+                print(f"   Fetched {len(raw_docs)} raw documents from: {successful_tools}")
+            
+            # Store tools used this iteration for next iteration's exclusion
+            state.used_tools_previous_iteration = tools_used_this_iteration
             
             # Step 3: Clean documents
             print(f"🧹 Cleaning {len(raw_docs)} documents...")

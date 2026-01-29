@@ -46,7 +46,7 @@ def example_usage():
     task_pipeline.add_task(ReportGenerationTask(include_raw_data=True))
     
     # Query workflow
-    query = "Summarize the recent news about the stock market for me."
+    query = "Summarize the latest news about Artificial Intelligence advancements"
     
     print("=" * 70)
     print("RAG EXAMPLE USAGE")

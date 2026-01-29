@@ -30,6 +30,7 @@ class AgentState:
     attempts: int = 0
     max_attempts: int = 5
     failed_tools: List[str] = field(default_factory=list)
+    used_tools_previous_iteration: List[str] = field(default_factory=list)
     
     def should_continue(self) -> bool:
         """Check if agent should continue crawling."""

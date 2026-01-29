@@ -208,7 +208,7 @@ class DocumentExtractionTask(RAGTask):
         for doc in documents:
             extracted_doc = {
                 "source": doc.get("source"),
-                "content": doc.get("content", "")[:500],  # Truncate long content
+                "content": doc.get("content", ""),  # Keep full content
                 "structured_data": doc.get("structured_data"),
             }
             extracted_docs.append(extracted_doc)
@@ -478,8 +478,7 @@ Generate a professional report-generation prompt that can be used with retrieved
             response = router.chat(
                 [{"role": "user", "content": prompt}],
                 model=None,  # Use default primary model
-                temperature=0.7,
-                max_tokens=800
+                temperature=0.7
             )
             
             return response.content
@@ -546,8 +545,7 @@ Generate the research report now."""
             response = router.chat(
                 [{"role": "user", "content": full_prompt}],
                 model=None,  # Use default primary model
-                temperature=0.7,
-                max_tokens=4000
+                temperature=0.7
             )
             
             return response.content
@@ -597,7 +595,6 @@ Generate the research report now."""
                 response = self.llm.chat(
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.7,
-                    max_tokens=300,
                 )
                 return response.get("content", "") if isinstance(response, dict) else str(response)
             elif hasattr(self.llm, 'invoke'):  # LangChain compatibility
@@ -605,7 +602,7 @@ Generate the research report now."""
                 response = self.llm.invoke([HumanMessage(content=prompt)])
                 return response.content if hasattr(response, 'content') else str(response)
             elif hasattr(self.llm, 'generate'):
-                return self.llm.generate(prompt, max_length=300)
+                return self.llm.generate(prompt)
             else:
                 return self._extract_summary_from_docs(documents)
         except Exception as e:
@@ -648,7 +645,6 @@ Detailed Analysis:"""
                 response = self.llm.chat(
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.7,
-                    max_tokens=500,
                 )
                 return response.get("content", "") if isinstance(response, dict) else str(response)
             elif hasattr(self.llm, 'invoke'):  # LangChain compatibility
@@ -695,7 +691,6 @@ Key Findings:"""
                 response = self.llm.chat(
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.5,
-                    max_tokens=400,
                 )
                 content = response.get("content", "") if isinstance(response, dict) else str(response)
             elif hasattr(self.llm, 'invoke'):  # LangChain compatibility
