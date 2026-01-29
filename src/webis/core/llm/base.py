@@ -339,6 +339,8 @@ class LLMRouter:
         
         # Try primary model, then fallbacks
         models_to_try = [model_name] + [m for m in self._fallback_chain if m != model_name]
+
+        print(models_to_try)
         
         last_error = None
         for try_model in models_to_try:
@@ -361,6 +363,8 @@ class LLMRouter:
                 # Cache the response
                 if use_cache and self._cache:
                     self._cache.set(messages, try_model, response)
+
+                print("success try model: ", try_model)
                 
                 return response
                 
@@ -394,8 +398,26 @@ def get_default_router() -> LLMRouter:
     if _default_router is None:
         _default_router = LLMRouter()
         
-        # Default to DeepSeek-V3.2 (Wendalog)
-        _default_router.add_model("deepseek-v3.2", primary=True)
+        if os.environ.get("CUSTOM_API_KEY"):
+            # Add custom model dynamically
+            custom_name = os.environ.get("CUSTOM_MODEL_NAME", "custom-model")
+            custom_config = ModelConfig(
+                name=custom_name,
+                provider="openai",
+                api_key_env="CUSTOM_API_KEY",
+                base_url=os.environ.get("CUSTOM_BASE_URL"),
+                cost_per_1m_input=0.1,
+                cost_per_1m_output=0.1,
+                context_window=100000,
+                supports_json_mode=True,
+            )
+            # Register it
+            _default_router.add_model(custom_name, config=custom_config, primary=True)
+            logger.info(f"Using Custom LLM: {custom_name}")
+        else:
+            # Default to DeepSeek-V3.2 (Wendalog)
+            _default_router.add_model("deepseek-v3.2", primary=True)
+            
         _default_router.add_model("deepseek-v3", fallback=True)
         _default_router.add_model("gpt-4o-mini", fallback=True)
             

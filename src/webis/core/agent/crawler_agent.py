@@ -9,15 +9,19 @@ and executing the search/crawl operation.
 from __future__ import annotations
 
 import json
-import logging
 import re
+import math
 from typing import List, Optional, Dict, Any
 
 from webis.core.llm.base import LLMRouter, get_default_router
-from webis.core.plugin import PluginRegistry, get_default_registry, SourcePlugin
+from webis.core.plugin import PluginRegistry, get_default_registry
 from webis.core.schema import WebisDocument, PipelineContext
+# from webis.plugins.sources.bright_data_plugin import BrightDataPlugin
 
-logger = logging.getLogger(__name__)
+
+# 移除logger相关导入和配置
+# import logging
+# logger = logging.getLogger(__name__)
 
 
 class CrawlerAgent:
@@ -57,10 +61,12 @@ class CrawlerAgent:
         Returns:
             List of fetched documents
         """
+        
         # 1. Get available tools
+        # print("self processors: ", self.registry.list_processors())
         all_sources = self.registry.list_sources()
         if not all_sources:
-            logger.warning("No source plugins registered!")
+            print("⚠️ WARNING: No source plugins registered!")  # 改为print
             return []
             
         # Filter excluded tools
@@ -68,10 +74,10 @@ class CrawlerAgent:
         sources = [s for s in all_sources if s not in excluded_tools]
         
         if not sources:
-            logger.warning(f"All sources excluded or unavailable! (Excluded: {excluded_tools})")
+            print(f"⚠️ WARNING: All sources excluded or unavailable! (Excluded: {excluded_tools})")  # 改为print
             # If all excluded, reset and try all
             sources = all_sources
-            logger.info("Resetting exclusions to allow retry.")
+            print("ℹ️ INFO: Resetting exclusions to allow retry.")  # 改为print
             
         source_descriptions = []
         for name in sources:
@@ -118,6 +124,7 @@ class CrawlerAgent:
         
         plan = []
         try:
+            # 2. Ask LLM to pick prioritized tools (if router available)
             response = self.router.chat(
                 [{"role": "user", "content": prompt}],
                 model=None, # Use primary
@@ -137,23 +144,29 @@ class CrawlerAgent:
                     plan = [data]
                     
             if not plan:
-                raise ValueError("No plan found in JSON")
+                logger.warning("No plan found in JSON, falling back to default.")
                 
-            logger.info(f"Agent plan: {[step['tool'] for step in plan]}")
-            
-        except Exception as e:
-            logger.error(f"LLM planning failed: {e}")
-            # Fallback strategy: Try all search engines
-            fallback_tools = ["duckduckgo", "google_search", "baidu_search"]
-            plan = [{"tool": t, "query": task, "reason": "Fallback"} for t in fallback_tools if t in sources]
-            if not plan and sources: 
-                 plan = [{"tool": sources[0], "query": task, "reason": "Last resort"}]
-            logger.info(f"Using fallback plan: {[step['tool'] for step in plan]}")
+            print(f"ℹ️ INFO: Agent plan: {[step['tool'] for step in plan]}")
 
-        # 4. Execute plan until limit met
+        except Exception as e:
+            print(f"⚠️ WARNING: LLM planning failed: {e}. Using fallback strategy.")
+            # Fallback strategy: Use Tavily and Bocha
+            fallback_tools = ["tavily_search", "bocha_search"]
+            plan = [{"tool": t, "query": task, "reason": "Fallback"} for t in fallback_tools if t in sources]
+            print(f"ℹ️ INFO: Using fallback plan: {[step['tool'] for step in plan]}")
+
+        # 4. Execute plan (Default to Tavily + Bocha if LLM disabled)
         all_docs = []
-        self.last_used_tools = [step['tool'] for step in plan]
         
+        # Default plan since LLM is commented out
+        if not plan:
+            plan = [
+                {"tool": "tavily_search", "query": task},
+                {"tool": "bocha_search", "query": task}
+            ]
+
+        self.last_used_tools = [step['tool'] for step in plan]
+
         for step in plan:
             if len(all_docs) >= limit:
                 break
@@ -161,30 +174,91 @@ class CrawlerAgent:
             tool_name = step.get("tool")
             query = step.get("query", task)
             
-            if tool_name not in sources:
-                logger.warning(f"Skipping unknown tool: {tool_name}")
-                continue
-                
-            remaining = limit - len(all_docs)
-            logger.info(f"Executing {tool_name} (Goal: {remaining} docs)...")
+            # Balanced strategy: Split remaining limit among remaining active tools in plan
+            # But we must respect the tool queue order.
+            
+            # Simple approach: Give each tool an equal share of the TOTAL limit, 
+            # or try to fill the remaining gap.
+            
+            # Count how many tools are left to run (including this one)
+            remaining_tools_count = len(plan) - self.last_used_tools.index(tool_name) 
+            # Note: last_used_tools is not updated yet, this is tricky. 
+            # Let's just use index in plan.
+            
+            idx = 0
+            for i, p in enumerate(plan):
+                if p['tool'] == tool_name and p['query'] == query:
+                    idx = i
+                    break
+            
+            remaining_tools_count = len(plan) - idx
+            
+            # Calculate target for this specific tool to ensure balance
+            # e.g. Limit 10, 2 tools. Tool 1 gets 5. Tool 2 gets 5 (or remaining).
+            target_per_tool = math.ceil(limit / len(plan))
+            
+            # But we also need to fill the gap if previous tools under-delivered
+            remaining_global_need = limit - len(all_docs)
+            
+            # The limit for THIS tool should be at least target_per_tool, 
+            # but capped at remaining_global_need
+            tool_limit = min(target_per_tool, remaining_global_need)
+            
+            # If we are the LAST tool, we must try to fill everything
+            if remaining_tools_count == 1:
+                tool_limit = remaining_global_need
+            
+            # Don't fetch 0
+            tool_limit = max(1, tool_limit)
+            
+            print(f"ℹ️ INFO: Executing {tool_name} (Goal: {tool_limit} docs, Global Need: {remaining_global_need})...")
             
             try:
-                # Fetch slightly more to ensure quality
-                new_docs = self._execute_tool(tool_name, query, limit=remaining, context=context)
-                logger.info(f"  -> Fetched {len(new_docs)} docs")
+                # Use the generic execution method via registry
+                new_docs = self._execute_tool(tool_name, query, limit=tool_limit, context=context)
+                print(f"  -> Fetched {len(new_docs)} docs")
                 
-                # Add unique docs
                 for doc in new_docs:
                     if len(all_docs) >= limit:
                         break
-                    # Simple duplicate check by URL (if available) or content hash could go here
                     all_docs.append(doc)
-                    
             except Exception as e:
-                logger.error(f"Step {tool_name} failed: {e}")
+                print(f"❌ ERROR: Step {tool_name} failed: {e}")
                 continue
-                
+        
         return all_docs
+        
+        # for step in plan:
+        #     if len(all_docs) >= limit:
+        #         break
+                
+        #     tool_name = step.get("tool")
+        #     query = step.get("query", task)
+            
+        #     if tool_name not in sources:
+        #         print(f"⚠️ WARNING: Skipping unknown tool: {tool_name}")  # 改为print
+        #         continue
+                
+        #     remaining = limit - len(all_docs)
+        #     print(f"ℹ️ INFO: Executing {tool_name} (Goal: {remaining} docs)...")  # 改为print
+            
+        #     try:
+        #         # Fetch slightly more to ensure quality
+        #         new_docs = self._execute_tool(tool_name, query, limit=remaining, context=context)
+        #         print(f"  -> Fetched {len(new_docs)} docs")  # 改为print
+                
+        #         # Add unique docs
+        #         for doc in new_docs:
+        #             if len(all_docs) >= limit:
+        #                 break
+        #             # Simple duplicate check by URL (if available) or content hash could go here
+        #             all_docs.append(doc)
+                    
+        #     except Exception as e:
+        #         print(f"❌ ERROR: Step {tool_name} failed: {e}")  # 改为print
+        #         continue
+                
+        # return all_docs
 
     def _execute_tool(
         self, 
@@ -207,6 +281,6 @@ class CrawlerAgent:
                 if len(documents) >= limit:
                     break
         except Exception as e:
-            logger.error(f"Tool execution failed ({tool_name}): {e}")
+            print(f"❌ ERROR: Tool execution failed ({tool_name}): {e}")  # 改为print
             
         return documents
