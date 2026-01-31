@@ -7,6 +7,7 @@ requests>=2.31.0  # HTTP requests
 # Crawler dependencies
 ddgs>=9.8.0  # DuckDuckGo search library (recommended to use new version)
 scrapy>=2.11.0  # Web crawling framework
+brightdata-sdk>=0.4.0  # Bright Data SDK for web crawling/search
 
 # LangChain dependencies (for agent and structuring)
 langchain>=0.1.0  # LangChain core

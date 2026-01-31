@@ -34,7 +34,7 @@ conda activate webis
 
 # Install dependencies from requirements.txt
 echo ""
-echo "Installing dependencies from requirements.txt..."
+echo "Installing dependencies from requirements.txt (includes brightdata-sdk)..."
 cd "$PROJECT_ROOT"
 pip install --upgrade pip
 pip install -r setup/requirements.txt

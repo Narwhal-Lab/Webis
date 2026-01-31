@@ -43,18 +43,6 @@ webis run "Find news about Peking University in the last three months and genera
 
 You must configure your API keys in `.env` for Agent features to work.
 
-```bash
-cp .env.example .env
-# Edit .env and set WENDALOG_API_KEY (or OPENAI_API_KEY)
-```
-
-Dependencies:
-This project requires `duckduckgo-search` (renamed to `ddgs`). If you face issues, run:
-
-```bash
-pip install ddgs
-```
-
 ### 2. Crawl Only
 
 Fetch documents without extraction. Returns a JSON list of `WebisDocument`.
