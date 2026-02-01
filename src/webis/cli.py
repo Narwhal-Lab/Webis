@@ -170,14 +170,14 @@ def cmd_run(task: str, limit: int, output_dir: str = None):
     if processed_docs:
         docs_path = os.path.join(output_dir, "documents.json")
         docs_data = [doc.model_dump(mode="json") for doc in processed_docs]
-        with open(docs_path, "w") as f:
+        with open(docs_path, "w", encoding="utf-8") as f:
             json.dump(docs_data, f, indent=2, ensure_ascii=False)
         logger.info(f"📁 Raw/Cleaned data saved to: {docs_path}")
 
     if extraction_result:
         # Save JSON
         json_path = os.path.join(output_dir, "result.json")
-        with open(json_path, "w") as f:
+        with open(json_path, "w", encoding="utf-8") as f:
             f.write(json.dumps(extraction_result.model_dump(mode="json"), indent=2, ensure_ascii=False))
         
         # Generate HTML Report
@@ -199,7 +199,7 @@ def cmd_crawl(task: str, limit: int, output_file: str = None):
     print(json.dumps(data, indent=2, ensure_ascii=False))
     
     if output_file:
-        with open(output_file, "w") as f:
+        with open(output_file, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
             logger.info(f"Saved {len(docs)} docs to {output_file}")
 
@@ -244,7 +244,7 @@ def cmd_extract(files: List[str], task: str, schema_path: str = None, output_fil
     print(json.dumps(result.data, indent=2, ensure_ascii=False))
     
     if output_file:
-        with open(output_file, "w") as f:
+        with open(output_file, "w", encoding="utf-8") as f:
             f.write(json.dumps(result.model_dump(mode="json"), indent=2, ensure_ascii=False))
 
 if __name__ == "__main__":
