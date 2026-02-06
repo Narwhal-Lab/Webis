@@ -4,12 +4,14 @@ import os
 import shutil
 import json
 import logging
+import subprocess
+from pathlib import Path
 from typing import List
 
 from dotenv import load_dotenv
 
 from webis.core.pipeline import Pipeline
-from webis.core.schema import WebisDocument, DocumentType, DocumentMetadata, PipelineContext
+from webis.core.schema import WebisDocument, DocumentType, DocumentMetadata, PipelineContext, StructuredResult
 from webis.core.plugin import get_default_registry
 from webis.core.agent.crawler_agent import CrawlerAgent
 
@@ -71,6 +73,15 @@ def main():
     extract_parser.add_argument("--schema", help="Path to JSON schema")
     extract_parser.add_argument("--output", "-o", help="Output file")
 
+    # html-report command (from result.json + documents.json)
+    html_report_parser = subparsers.add_parser("html-report", help="Generate HTML report from result.json")
+    html_report_parser.add_argument("result", help="Path to result.json")
+    html_report_parser.add_argument("--documents", help="Path to documents.json")
+    html_report_parser.add_argument("--output", "-o", help="Output directory")
+
+    # visualizer command
+    visualizer_parser = subparsers.add_parser("visualizer", help="Launch Webis Visualizer UI (Streamlit)")
+
     args = parser.parse_args()
 
     if args.command == "run":
@@ -79,6 +90,10 @@ def main():
         cmd_crawl(args.task, args.limit, args.output)
     elif args.command == "extract":
         cmd_extract(args.files, args.task, args.schema, args.output)
+    elif args.command == "html-report":
+        cmd_html_report(args.result, args.documents, args.output)
+    elif args.command == "visualizer":
+        cmd_visualizer()
     else:
         parser.print_help()
 
@@ -191,17 +206,68 @@ def cmd_run(task: str, limit: int, output_dir: str = None):
     else:
         logger.error("No result to save.")
 
+def cmd_visualizer():
+    project_root = Path(__file__).resolve().parents[2]
+    app_path = project_root / "src" / "webis_visualizer" / "app.py"
+    if not app_path.exists():
+        logger.error(f"Visualizer app not found: {app_path}")
+        return
+
+    if not shutil.which("streamlit"):
+        logger.error("Streamlit is not installed. Please install dependencies first.")
+        return
+
+    cmd = [sys.executable, "-m", "streamlit", "run", str(app_path)]
+    logger.info("Launching Webis Visualizer...")
+    subprocess.run(cmd, check=False, cwd=str(project_root))
+
 def cmd_crawl(task: str, limit: int, output_file: str = None):
+    # Align crawl outputs with run outputs under output/{timestamp}/
+    import datetime
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_dir = os.path.join("output", timestamp)
+    default_output_file = os.path.join(output_dir, "documents.json")
+
+    extra_output_file = None
+    if output_file:
+        # If a directory is provided, store documents.json inside it
+        if os.path.isdir(output_file) or output_file.endswith(os.sep):
+            extra_output_file = os.path.join(output_file.rstrip(os.sep), "documents.json")
+        else:
+            extra_output_file = output_file
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    context = PipelineContext(task=task, output_dir=output_dir)
     agent = CrawlerAgent()
-    docs = agent.run(task, limit=limit)
+    docs = agent.run(task, limit=limit, context=context)
     
     data = [doc.model_dump(mode="json") for doc in docs]
     print(json.dumps(data, indent=2, ensure_ascii=False))
     
-    if output_file:
-        with open(output_file, "w", encoding="utf-8") as f:
+    # Always write default output to match `webis run`
+    with open(default_output_file, "w") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+    logger.info(f"Saved {len(docs)} docs to {default_output_file}")
+
+    # Extract structured result from crawled documents
+    registry = get_default_registry()
+    extractor = registry.get_extractor("llm_extractor")
+    if extractor:
+        result = extractor.extract(docs, context=context)
+        json_path = os.path.join(output_dir, "result.json")
+        with open(json_path, "w") as f:
+            f.write(json.dumps(result.model_dump(mode="json"), indent=2, ensure_ascii=False))
+        print(f"\n📁 JSON saved to:   {json_path}")
+    else:
+        logger.warning("LLM Extractor not found. Skipping extraction.")
+
+    # Optionally write to user-specified path for backward compatibility
+    if extra_output_file:
+        os.makedirs(os.path.dirname(extra_output_file) or ".", exist_ok=True)
+        with open(extra_output_file, "w") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
-            logger.info(f"Saved {len(docs)} docs to {output_file}")
+        logger.info(f"Saved {len(docs)} docs to {extra_output_file}")
 
 def cmd_extract(files: List[str], task: str, schema_path: str = None, output_file: str = None):
     registry = get_default_registry()
@@ -246,6 +312,40 @@ def cmd_extract(files: List[str], task: str, schema_path: str = None, output_fil
     if output_file:
         with open(output_file, "w", encoding="utf-8") as f:
             f.write(json.dumps(result.model_dump(mode="json"), indent=2, ensure_ascii=False))
+
+def cmd_html_report(result_path: str, documents_path: str = None, output_dir: str = None):
+    registry = get_default_registry()
+    html_plugin = registry.get_output("html_report")
+
+    if not html_plugin:
+        logger.error("HtmlReportPlugin not found.")
+        return
+
+    if not os.path.exists(result_path):
+        logger.error(f"result.json not found: {result_path}")
+        return
+
+    if not output_dir:
+        output_dir = os.path.dirname(result_path) or "."
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    with open(result_path, "r") as f:
+        result_data = json.load(f)
+    result = StructuredResult.model_validate(result_data)
+
+    documents = []
+    if documents_path:
+        if not os.path.exists(documents_path):
+            logger.error(f"documents.json not found: {documents_path}")
+            return
+        with open(documents_path, "r") as f:
+            docs_data = json.load(f)
+        documents = [WebisDocument.model_validate(d) for d in docs_data]
+
+    context = PipelineContext(task="Generate HTML report", output_dir=output_dir)
+    html_plugin.save(result, context=context, output_dir=output_dir, documents=documents)
+    print(f"\n✨ Report generated: {os.path.join(output_dir, 'report.html')}")
 
 if __name__ == "__main__":
     main()

@@ -1,71 +1,106 @@
-# Webis: AI 驱动的数据处理流水线
+# Webis：AI 驱动的数据管道
 
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 
-**Webis** 是一个模块化、插件优先的 AI 数据框架。它致力于将互联网海量数据（Web, SaaS, 数据库）连接到大语言模型（LLM），通过智能的获取、清洗、抽取流程，为 AI 应用提供高质量的上下文知识。
+**Webis** 是一个模块化、插件化的框架，旨在为下一代 AI 应用提供动力。它通过稳健的采集、处理与抽取流水线，将多样数据源（Web、SaaS、数据库等）连接到大语言模型（LLM）。
 
-## 🚀 核心特性
+## 🚀 主要特性
 
-* **插件化架构 (Plugin-First)**: 一切皆插件（数据源、处理器、提取器、模型），高度可扩展。
-* **智能爬虫 Agent**: 内置基于 LLM 的 `CrawlerAgent`，能理解自然语言任务，自动选择最佳数据源并生成查询。
-* **RAG 原生支持**: 内置 PDF/HTML 清洗、降噪、切片功能，专为 RAG 知识库构建设计。
-* **LLM 结构化抽取**: 通过动态 Schema 推断，将非结构化文档转化为标准 JSON 数据。
-* **统一 CLI**: 一个 `webis` 命令搞定所有流程。
+* **插件优先架构**：一切皆插件（Source、Processor、Extractor、Model）。
+* **智能爬虫代理**：使用 LLM 动态选择最佳数据源并生成查询。
+* **RAG 就绪**：内置清洗、切分与 RAG 准备能力。
+* **LLM 抽取**：把非结构化 PDF/网页转为结构化 JSON（支持动态 Schema）。
+* **统一 CLI**：用一个 `webis` 命令完成所有操作。
 
-## 📦 安装指南
+## 📦 安装
 
 ```bash
 cd webis
 pip install -e .
 ```
 
-## 🛠️ 使用指南
+## 🛠️ 使用
 
-Webis 通过 `webis` 命令行工具进行操作。
+Webis 主要通过 `webis` CLI 运行。
 
-### 1. 端到端运行 (Run)
+### 1. 端到端执行
 
-执行完整流水线：自动规划数据源 -> 抓取 -> 清洗 -> 结构化抽取。
-
-```bash
-# 例子：查找北京大学近三个月的新闻并生成报告
-webis run "查找北京大学近三个月的新闻并生成报告" --limit 3
-```
-
-✨ **New**: 结果会自动保存到 `output/{timestamp}/` 目录，包含 JSON 数据和精美的 HTML 报告网页。
-
-### 2. 仅抓取 (Crawl)
-
-只进行搜索和下载，返回包含文档内容的 JSON 列表。
+执行完整流水线：识别数据源 -> 抓取 -> 清洗 -> 抽取 -> 可视化报告。
 
 ```bash
-webis crawl "Python 3.13 新特性" --limit 5 -o crawl_results.json
+# 示例：查找过去三个月关于北京大学的新闻并生成报告
+webis run "Find news about Peking University in the last three months and generate a report" --limit 3
 ```
 
-### 3. 本地抽取 (Extract)
+* `report.html`：美观的 HTML 报告（抽取成功时）。
+* `result.json`：结构化抽取结果。
+* `documents.json`：所有抓取文档的**原始与清洗内容**（即使抽取失败也会保存）。
 
-对本地文件（PDF, Word, TXT, MD）进行 AI 结构化提取。
+## ⚠️ 配置
+
+必须在 `.env` 中配置 API Key，Agent 功能才能正常工作。
+
+### 2. 仅抓取
+
+只抓取相关数据。
 
 ```bash
-# 从研报 PDF 中提取摘要
-webis extract ./report.pdf --task "提取财务摘要和风险提示"
-
-# 使用指定 Schema 进行提取
-webis extract ./resume.pdf --schema ./schemas/resume_schema.json
+webis crawl "Python 3.13 new features" --limit 5 
 ```
 
-## 🧩 系统架构
+* `output/{timestamp}/documents.json`：结构化抽取结果。
+* `output/{timestamp}/result.json`：所有抓取文档的**原始与清洗内容**（即使抽取失败也会保存）。
 
-项目核心代码位于 `src/webis/`：
 
-* **`core/`**: 内核层 (Agent 基类, Pipeline 引擎, Plugin 注册表)。
-* **`plugins/`**:
-  * `sources/`: 数据源插件 (GNews, Google Search, GitHub 等)。
-  * `processors/`: 数据处理器 (PDF 解析, HTML 清洗等)。
-  * `extractors/`: 抽取器 (LLMExtractor)。
-* **`plugin_sdk/`**: 开发者工具包，用于快速开发新插件。
+### 3. 仅抽取
 
-## 🤝 参与贡献
+使用 LLM 从本地文件抽取结构化数据。
 
-欢迎提交 PR！请参阅 [CONTRIBUTING.md](CONTRIBUTING.md) 了解如何使用 SDK 开发新插件。
+```bash
+# 从 PDF 抽取
+webis extract ./report.pdf --task "Extract financial summary"
+
+# 使用指定 Schema 抽取
+webis extract ./cv.pdf --schema ./schemas/resume.json
+```
+
+### 4. 生成 HTML 报告
+
+基于已有的 `result.json`（可选 `documents.json`）生成 `report.html`。
+
+```bash
+webis html-report ./output/20260204_113243/result.json --documents ./output/20260204_113243/documents.json
+```
+
+默认输出到 `result.json` 所在目录。
+
+## 🖥️ 可视化界面
+
+### 1. 启动可视化
+
+```bash
+webis visualizer
+```
+
+### 2. 基本流程
+
+* 在左侧栏添加数据源（Web 抓取或本地上传）。
+* 运行流水线并等待完成。
+* 在 UI 中查看结构化 JSON 与统计信息。
+* 在 AI 助手标签中结合来源上下文进行分析。
+
+## 🧩 架构
+
+项目结构位于 `src/webis/`：
+
+* **`core/`**：核心（Agents、Pipeline、Plugin Registry）。
+* **`plugins/`**：
+  * `sources/`：GNews、Google Search、GitHub 等。
+  * `processors/`：PDF 解析、HTML 清洗等。
+  * `extractors/`：LLMExtractor。
+* **`plugin_sdk/`**：用于构建新插件的开发者友好接口。
+
+## 🤝 贡献
+
+欢迎贡献！如何使用 SDK 编写新插件，请参考 [CONTRIBUTING.md](CONTRIBUTING.md)。

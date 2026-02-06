@@ -29,7 +29,7 @@ fi
 
 # Install dependencies from requirements.txt
 echo ""
-echo "Installing dependencies from requirements.txt (includes brightdata-sdk)..."
+echo "Installing dependencies from requirements.txt (includes visualizer + brightdata-sdk)..."
 cd "$PROJECT_ROOT"
 if [ -n "$VIRTUAL_ENV" ]; then
     # If venv is activated, use regular pip

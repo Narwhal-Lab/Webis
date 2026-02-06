@@ -3,12 +3,14 @@ Webis Visualizer - NotebookLM-style interface for Webis pipeline
 """
 
 import streamlit as st
+import streamlit.components.v1 as components
 import os
 import sys
 import json
 import html as html_lib
 import base64
 import textwrap
+import subprocess
 from pathlib import Path
 
 # Add parent directory to path so we can import Webis modules
@@ -58,6 +60,39 @@ def init_session_state():
         st.session_state.active_tab = "data_source"
     if "queued_prompt" not in st.session_state:
         st.session_state.queued_prompt = None
+    if "last_output_dir" not in st.session_state:
+        st.session_state.last_output_dir = None
+    if "selected_output_dir" not in st.session_state:
+        st.session_state.selected_output_dir = None
+    if "output_folder_select" not in st.session_state:
+        st.session_state.output_folder_select = None
+    if "html_report_status" not in st.session_state:
+        st.session_state.html_report_status = "idle"
+    if "html_report_pending" not in st.session_state:
+        st.session_state.html_report_pending = False
+    if "html_report_html" not in st.session_state:
+        st.session_state.html_report_html = None
+    if "html_report_target_dir" not in st.session_state:
+        st.session_state.html_report_target_dir = None
+    if "html_report_last_dir" not in st.session_state:
+        st.session_state.html_report_last_dir = None
+    if "pending_select_dir" not in st.session_state:
+        st.session_state.pending_select_dir = None
+    if "html_report_link" not in st.session_state:
+        st.session_state.html_report_link = None
+
+    # Auto-discover latest output dir with result.json if not set
+    if st.session_state.last_output_dir is None:
+        repo_root = Path(__file__).parent.parent.parent
+        output_root = repo_root / "output"
+        if output_root.exists():
+            candidates = [
+                p for p in output_root.iterdir()
+                if p.is_dir() and (p / "result.json").exists()
+            ]
+            if candidates:
+                latest = max(candidates, key=lambda p: p.stat().st_mtime)
+                st.session_state.last_output_dir = str(latest)
 
 # ------------------------------
 # Helper Functions
@@ -188,10 +223,6 @@ def format_message_html(content: str) -> str:
 def render_chat_history(messages):
     """Render chat messages as a NotebookLM-style panel."""
     if not messages:
-        st.markdown(
-            "<div class=\"chat-empty\">Ask a question to get started.</div>",
-            unsafe_allow_html=True
-        )
         return
 
     rows = []
@@ -230,10 +261,156 @@ User question: {prompt}
         except Exception as e:
             st.error(f"❌ Failed to generate response: {str(e)}")
 
+def _find_latest_output_dir(output_root: Path) -> Path | None:
+    if not output_root.exists():
+        return None
+    dirs = [p for p in output_root.iterdir() if p.is_dir()]
+    if not dirs:
+        return None
+    return max(dirs, key=lambda p: p.stat().st_mtime)
+
+
+def run_crawl_cli(query: str, limit: int) -> None:
+    repo_root = Path(__file__).parent.parent.parent
+    output_root = repo_root / "output"
+    cmd = [sys.executable, "-m", "webis.cli", "crawl", query, "--limit", str(limit)]
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(repo_root)
+
+    st.session_state.pipeline_status.update({
+        "fetch": "in_progress",
+        "clean": "idle",
+        "extract": "idle",
+        "progress": 10
+    })
+
+    before = set(output_root.iterdir()) if output_root.exists() else set()
+
+    result = subprocess.run(
+        cmd,
+        cwd=repo_root,
+        env=env,
+        capture_output=True,
+        text=True
+    )
+
+    if result.returncode != 0:
+        st.session_state.pipeline_status.update({
+            "fetch": "failed",
+            "clean": "failed",
+            "extract": "failed",
+            "progress": 0
+        })
+        return
+
+    after = set(output_root.iterdir()) if output_root.exists() else set()
+    new_dirs = [p for p in (after - before) if p.is_dir()]
+    output_dir = max(new_dirs, key=lambda p: p.stat().st_mtime) if new_dirs else _find_latest_output_dir(output_root)
+
+    if not output_dir:
+        st.session_state.pipeline_status.update({
+            "fetch": "failed",
+            "clean": "failed",
+            "extract": "failed",
+            "progress": 0
+        })
+        return
+
+    st.session_state.last_output_dir = str(output_dir)
+    st.session_state.selected_output_dir = output_dir.name
+    st.session_state.pending_select_dir = output_dir.name
+    load_output_dir_state(st.session_state.selected_output_dir)
+
+    st.session_state.pipeline_status.update({
+        "fetch": "completed",
+        "clean": "completed",
+        "extract": "completed",
+        "progress": 100
+    })
+
+def run_html_report_cli(target_dir: str | None) -> str | None:
+    repo_root = Path(__file__).parent.parent.parent
+    output_root = repo_root / "output"
+    if not output_root.exists():
+        return None
+
+    if not target_dir:
+        return None
+
+    output_dir = output_root / target_dir
+    result_path = output_dir / "result.json"
+    documents_path = output_dir / "documents.json"
+
+    if not result_path.exists():
+        return None
+
+    cmd = [
+        sys.executable, "-m", "webis.cli", "html-report",
+        str(result_path),
+    ]
+    if documents_path.exists():
+        cmd += ["--documents", str(documents_path)]
+
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(repo_root)
+    result = subprocess.run(cmd, cwd=repo_root, env=env, capture_output=True, text=True)
+    if result.returncode != 0:
+        return None
+
+    report_path = output_dir / "report.html"
+    if report_path.exists():
+        return report_path.read_text(encoding="utf-8")
+
+    return None
+
+def load_output_dir_state(selected_dir: str | None) -> None:
+    repo_root = Path(__file__).parent.parent.parent
+    output_root = repo_root / "output"
+    if not selected_dir:
+        st.session_state.documents = []
+        st.session_state.structured_result = None
+        st.session_state.pipeline_status.update({
+            "fetch": "idle",
+            "clean": "idle",
+            "extract": "idle",
+            "progress": 0
+        })
+        return
+
+    target_dir = output_root / selected_dir
+    docs_path = target_dir / "documents.json"
+    result_path = target_dir / "result.json"
+
+    if docs_path.exists():
+        with docs_path.open("r", encoding="utf-8") as f:
+            docs_data = json.load(f)
+        st.session_state.documents = [WebisDocument.model_validate(d) for d in docs_data]
+    else:
+        st.session_state.documents = []
+
+    if result_path.exists():
+        with result_path.open("r", encoding="utf-8") as f:
+            st.session_state.structured_result = json.load(f)
+        st.session_state.pipeline_status.update({
+            "fetch": "completed",
+            "clean": "completed",
+            "extract": "completed",
+            "progress": 100
+        })
+    else:
+        st.session_state.structured_result = None
+        st.session_state.pipeline_status.update({
+            "fetch": "completed" if docs_path.exists() else "idle",
+            "clean": "idle",
+            "extract": "idle",
+            "progress": 30 if docs_path.exists() else 0
+        })
+
 # ------------------------------
 # Main App
 # ------------------------------
 init_session_state()
+
 
 # Custom CSS
 st.markdown(textwrap.dedent("""
@@ -264,6 +441,210 @@ st.markdown(textwrap.dedent("""
         section[data-testid="stSidebar"] {
             background: linear-gradient(160deg, #d6efea, #d9f1d2);
             border-right: 1px solid var(--border);
+            display: block !important;
+            visibility: visible !important;
+            transform: none !important;
+            margin-left: 0 !important;
+            width: 20rem !important;
+            min-width: 20rem !important;
+        }
+        /* Hide Streamlit's "Press Enter to apply" hint under text inputs */
+        div[data-testid="stTextInput"] small {
+            display: none !important;
+        }
+        .right-rail {
+            position: fixed;
+            top: 0;
+            right: 0;
+            height: 100vh;
+            width: 20rem;
+            background: linear-gradient(160deg, #d6efea, #d9f1d2);
+            border-left: 1px solid var(--border);
+            z-index: 0;
+            pointer-events: auto;
+            display: flex;
+            flex-direction: column;
+            padding: 18px 16px;
+            gap: 14px;
+        }
+        .right-rail-title {
+            font-weight: 700;
+            font-size: 1.05rem;
+            color: var(--ink);
+        }
+        .output-select-wrapper {
+            margin: 10px auto 6px;
+            width: 260px;
+        }
+        div[data-testid="stTabs"] {
+            margin-top: 6px;
+        }
+        div[data-testid="stTabs"] [role="tablist"] {
+            margin-bottom: 8px;
+        }
+        div[data-testid="stTabs"] [role="tabpanel"] {
+            padding-top: 0;
+        }
+        .output-select-wrapper div[data-testid="stSelectbox"] > div {
+            background: #ffffff;
+            border: 1px solid var(--border);
+            border-radius: 999px;
+            padding: 2px 10px;
+            box-shadow: 0 8px 18px rgba(23, 56, 56, 0.08);
+        }
+        .output-select-wrapper div[data-testid="stSelectbox"] span {
+            font-weight: 600;
+            color: var(--ink);
+        }
+        .right-rail-list {
+            display: grid;
+            gap: 12px;
+        }
+        .right-rail-item {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 12px 14px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            box-shadow: var(--shadow);
+            color: var(--ink);
+            font-weight: 600;
+            font-size: 0.95rem;
+            text-decoration: none;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+        .right-rail-item,
+        .right-rail-item *,
+        .right-rail-item:visited,
+        .right-rail-item:hover,
+        .right-rail-item:active,
+        .right-rail-item:focus {
+            text-decoration: none !important;
+            text-decoration-line: none !important;
+            color: var(--ink) !important;
+        }
+        .right-rail-item:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(23, 56, 56, 0.12);
+        }
+        .right-rail-item.disabled {
+            pointer-events: none;
+            opacity: 0.5;
+        }
+        .right-rail-button {
+            width: 100%;
+            text-align: left;
+            cursor: pointer;
+            appearance: none;
+            border: 1px solid var(--border);
+            background: var(--card);
+        }
+        .right-rail-button:disabled {
+            cursor: not-allowed;
+        }
+        .right-rail-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            margin-top: 16px;
+            padding: 10px 12px;
+            border-radius: 12px;
+            border: 1px dashed var(--border);
+            color: var(--ink);
+            text-decoration: none;
+            font-weight: 600;
+            font-size: 0.9rem;
+            background: rgba(255, 255, 255, 0.7);
+        }
+        .right-rail-link.muted {
+            color: var(--muted);
+            border-style: solid;
+        }
+        .right-rail-preview {
+            border: 1px dashed var(--border);
+            border-radius: 12px;
+            padding: 10px 12px;
+            color: var(--ink);
+            background: rgba(255, 255, 255, 0.7);
+            font-weight: 600;
+            font-size: 0.9rem;
+        }
+        .right-rail-preview-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .right-rail-preview.muted {
+            color: var(--muted);
+            border-style: solid;
+        }
+        .right-rail-preview iframe {
+            display: none;
+        }
+        .right-rail-download {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            padding: 6px 10px;
+            border-radius: 8px;
+            border: 1px solid transparent;
+            background: var(--accent);
+            color: #ffffff;
+            font-weight: 600;
+            font-size: 0.8rem;
+            text-decoration: none;
+            box-shadow: 0 10px 20px rgba(49, 173, 173, 0.28);
+            transition: transform 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+        }
+        .right-rail-download,
+        .right-rail-download:visited,
+        .right-rail-download:hover,
+        .right-rail-download:active,
+        .right-rail-download:focus {
+            text-decoration: none !important;
+            color: #ffffff !important;
+        }
+        .right-rail-download:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 12px 22px rgba(49, 173, 173, 0.35);
+            background: #2a9c9c;
+        }
+        .right-rail-download svg {
+            width: 14px;
+            height: 14px;
+            fill: currentColor;
+        }
+        .right-rail-item.download-btn {
+            cursor: pointer;
+        }
+        .right-rail-icon {
+            width: 28px;
+            height: 28px;
+            border-radius: 10px;
+            background: #e4f7f4;
+            display: grid;
+            place-items: center;
+            flex: 0 0 auto;
+        }
+        .right-rail-icon.icon-json {
+            background: #e6f0ff;
+            color: #2b6cb0;
+        }
+        .right-rail-icon.icon-html {
+            background: #ffe9e3;
+            color: #c05621;
+        }
+        .right-rail-icon.icon-md {
+            background: #ecf8ef;
+            color: #2f855a;
+        }
+        .right-rail-icon svg {
+            width: 16px;
+            height: 16px;
+            fill: currentColor;
         }
         section[data-testid="stSidebar"] .stButton > button {
             background: var(--accent);
@@ -315,11 +696,15 @@ st.markdown(textwrap.dedent("""
         }
         div[data-testid="stAppViewContainer"] .block-container {
             padding-top: 1.2rem;
+            padding-right: 22rem;
         }
 
         h1, h2, h3, h4 {
             font-family: 'Fraunces', serif;
             letter-spacing: 0.2px;
+        }
+        h1 {
+            margin-top: 0 !important;
         }
 
         .brand-bar {
@@ -347,25 +732,6 @@ st.markdown(textwrap.dedent("""
         .brand-subtitle {
             font-size: 0.95rem;
             color: var(--muted);
-        }
-
-        .sidebar-title {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            padding: 10px 12px;
-            border-radius: 14px;
-            background: linear-gradient(120deg, rgba(49, 173, 173, 0.18), rgba(156, 206, 123, 0.18));
-            border: 1px solid var(--border);
-            box-shadow: var(--shadow);
-            font-weight: 700;
-            font-size: 1.1rem;
-        }
-        .sidebar-title span {
-            color: var(--muted);
-            font-size: 0.8rem;
-            text-transform: uppercase;
-            letter-spacing: 0.9px;
         }
 
         .section-title {
@@ -440,6 +806,15 @@ st.markdown(textwrap.dedent("""
             border-radius: 999px;
             transition: width 0.3s ease;
         }
+        .progress-shell.loading .progress-fill {
+            background-size: 200% 100%;
+            animation: progress-flow 1.2s ease-in-out infinite;
+        }
+        @keyframes progress-flow {
+            0% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+            100% { background-position: 0% 50%; }
+        }
         .pipeline-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -480,7 +855,7 @@ st.markdown(textwrap.dedent("""
         }
 
         .chat-surface {
-            background: #f8fffc;
+            background: #f3fbf6;
             border: 1px solid var(--border);
             border-radius: 18px;
             padding: 16px;
@@ -492,17 +867,19 @@ st.markdown(textwrap.dedent("""
             border-radius: 14px;
             padding: 12px 14px;
             margin-bottom: 12px;
-            border: 1px solid var(--border);
+            border: 1px solid #d9efe8;
             background: #ffffff;
             animation: rise 0.3s ease;
         }
         .chat-bubble.user {
             margin-left: 18%;
-            background: #e4f7f4;
-            border-color: #b7e6dd;
+            background: #dff5f0;
+            border-color: #bfe8dd;
         }
         .chat-bubble.assistant {
             margin-right: 18%;
+            background: #f7fffb;
+            border-color: #d6ebe5;
         }
         .chat-role {
             font-size: 0.7rem;
@@ -520,6 +897,59 @@ st.markdown(textwrap.dedent("""
             border: 1px dashed var(--border);
             border-radius: 14px;
             padding: 16px;
+        }
+        .assistant-shell {
+            background: #ffffff;
+            border: 1px solid var(--border);
+            border-radius: 18px;
+            box-shadow: var(--shadow);
+            overflow: hidden;
+        }
+        .assistant-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 14px 18px;
+            border-bottom: 1px solid var(--border);
+            background: linear-gradient(160deg, #d6efea, #d9f1d2);
+        }
+        .assistant-title {
+            font-weight: 700;
+            font-size: 1rem;
+        }
+        .assistant-actions {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .assistant-body {
+            min-height: 52vh;
+            display: grid;
+            place-items: center;
+            padding: 32px 18px 24px;
+            background: #fbfffd;
+        }
+        .assistant-empty {
+            display: grid;
+            place-items: center;
+            gap: 12px;
+            text-align: center;
+            color: var(--muted);
+        }
+        .assistant-empty-title {
+            font-weight: 700;
+            color: var(--ink);
+            font-size: 1.05rem;
+        }
+        .assistant-footer {
+            border-top: 1px solid var(--border);
+            padding: 10px 14px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            color: var(--muted);
+            font-size: 0.85rem;
+            background: #f2fbf1;
         }
         .side-card {
             background: var(--card);
@@ -548,6 +978,58 @@ st.markdown(textwrap.dedent("""
             color: var(--muted);
             font-size: 0.8rem;
         }
+        div[data-testid="stFileUploader"] {
+            position: relative;
+            border: 1px dashed var(--border);
+            border-radius: 16px;
+            background: #f8fffc;
+            padding: 28px 12px;
+            min-height: 120px;
+            box-shadow: var(--shadow);
+            overflow: hidden;
+        }
+        div[data-testid="stFileUploader"]::before {
+            content: "+";
+            position: absolute;
+            inset: 0;
+            display: grid;
+            place-items: center;
+            font-size: 2.4rem;
+            color: var(--muted);
+            pointer-events: none;
+        }
+        div[data-testid="stFileUploader"] > label,
+        div[data-testid="stFileUploader"] section {
+            display: none !important;
+        }
+        div[data-testid="stFileUploader"] button {
+            position: absolute !important;
+            inset: 0 !important;
+            opacity: 0 !important;
+        }
+        div[data-testid="stChatInput"] {
+            background: #f2fbf1;
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 6px 10px;
+            box-shadow: var(--shadow);
+        }
+        div[data-testid="stChatInput"] textarea {
+            background: transparent !important;
+            border: none !important;
+            color: var(--ink);
+            font-family: 'Space Grotesk', sans-serif;
+        }
+        div[data-testid="stChatInput"] textarea::placeholder {
+            color: var(--muted);
+        }
+        div[data-testid="stChatInput"] button {
+            background: var(--accent) !important;
+            color: #ffffff !important;
+            border: none !important;
+            border-radius: 999px !important;
+            box-shadow: none !important;
+        }
 
         @keyframes rise {
             from { transform: translateY(6px); opacity: 0.0; }
@@ -571,44 +1053,219 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# ------------------------------
-# Sidebar - Data Source Management
-# ------------------------------
-st.sidebar.markdown(
-    "<div class=\"sidebar-title\">📁 Data Sources</div>",
+# Output folder selector (below header)
+repo_root = Path(__file__).parent.parent.parent
+output_root = repo_root / "output"
+output_folders = []
+if output_root.exists():
+    output_folders = sorted([p.name for p in output_root.iterdir() if p.is_dir()], reverse=True)
+
+if output_folders:
+    if st.session_state.selected_output_dir not in output_folders:
+        st.session_state.selected_output_dir = output_folders[0]
+    if st.session_state.pending_select_dir in output_folders:
+        st.session_state.selected_output_dir = st.session_state.pending_select_dir
+        st.session_state.output_folder_select = st.session_state.pending_select_dir
+        st.session_state.pending_select_dir = None
+    if st.session_state.output_folder_select not in output_folders:
+        st.session_state.output_folder_select = st.session_state.selected_output_dir
+else:
+    st.session_state.selected_output_dir = None
+    st.session_state.output_folder_select = None
+
+st.markdown("<div class=\"output-select-wrapper\">", unsafe_allow_html=True)
+selected = st.selectbox(
+    "Output Folder",
+    options=output_folders,
+    index=output_folders.index(st.session_state.output_folder_select) if st.session_state.output_folder_select else 0,
+    key="output_folder_select",
+    label_visibility="collapsed"
+)
+st.session_state.selected_output_dir = selected if output_folders else None
+load_output_dir_state(st.session_state.selected_output_dir)
+st.markdown("</div>", unsafe_allow_html=True)
+
+# Right rail (uses selected output folder)
+structured_json_link = ""
+structured_json_class = "right-rail-item disabled"
+selected_dir = st.session_state.selected_output_dir
+result_path = None
+report_path = None
+
+if selected_dir:
+    result_path = output_root / selected_dir / "result.json"
+    report_path = output_root / selected_dir / "report.html"
+
+if result_path and result_path.exists():
+    structured_json = result_path.read_text(encoding="utf-8")
+    structured_json_b64 = base64.b64encode(structured_json.encode("utf-8")).decode("utf-8")
+    structured_json_link = f"data:application/json;charset=utf-8;base64,{structured_json_b64}"
+    structured_json_class = "right-rail-item"
+    html_report_enabled = True
+else:
+    html_report_enabled = False
+
+html_report_download_link = ""
+if report_path and report_path.exists():
+    html_report_content = report_path.read_text(encoding="utf-8")
+    html_report_b64 = base64.b64encode(html_report_content.encode("utf-8")).decode("utf-8")
+    html_report_download_link = f"data:text/html;charset=utf-8;base64,{html_report_b64}"
+
+html_report_block = '<div class="right-rail-preview muted">No HTML report yet</div>'
+is_active_html_dir = bool(selected_dir) and selected_dir == st.session_state.html_report_last_dir
+if st.session_state.html_report_status == "processing" and is_active_html_dir:
+    html_report_block = '<div class="right-rail-preview">Processing...</div>'
+elif report_path and report_path.exists():
+    html_report_block = textwrap.dedent(f"""
+        <div class="right-rail-preview-row">
+            <div class="right-rail-preview">HTML Report Ready</div>
+            <a class="right-rail-download" href="{html_report_download_link}" download="report.html">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M12 3a1 1 0 0 1 1 1v8.59l2.3-2.3a1 1 0 1 1 1.4 1.42l-4.01 4a1 1 0 0 1-1.38 0l-4.01-4a1 1 0 1 1 1.4-1.42L11 12.59V4a1 1 0 0 1 1-1zm-7 14a1 1 0 0 1 1 1v1h12v-1a1 1 0 1 1 2 0v2a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-2a1 1 0 0 1 1-1z"/>
+                </svg>
+                <span>Download</span>
+            </a>
+        </div>
+    """).strip()
+elif st.session_state.html_report_status == "failed" and is_active_html_dir:
+    html_report_block = '<div class="right-rail-preview muted">Failed to generate HTML report</div>'
+
+html_report_action_enabled = html_report_enabled and st.session_state.html_report_status != "processing"
+html_report_button_class = "right-rail-item right-rail-button"
+if not html_report_action_enabled:
+    html_report_button_class += " disabled"
+html_report_button_disabled_attr = "disabled" if not html_report_action_enabled else ""
+
+st.markdown(
+    textwrap.dedent(f"""
+        <aside class="right-rail">
+            <div class="right-rail-title">Value Data Generation</div>
+            <div class="right-rail-list">
+                <a class="{structured_json_class}" href="{structured_json_link or '#'}" download="result.json">
+                    <div class="right-rail-icon icon-json">
+                        <svg viewBox="0 0 24 24" aria-hidden="true">
+                            <path d="M7 4h7l4 4v12a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zm7 1.5V9h3.5L14 5.5zM8 12h2v2H8v-2zm0 4h2v2H8v-2zm4-4h4v2h-4v-2zm0 4h4v2h-4v-2z"/>
+                        </svg>
+                    </div>
+                    <div>Structured JSON file</div>
+                </a>
+                <div class="right-rail-item disabled" aria-disabled="true">
+                    <div class="right-rail-icon icon-md">
+                        <svg viewBox="0 0 24 24" aria-hidden="true">
+                            <path d="M5 4h8l6 6v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zm8 1.5V10h4.5L13 5.5zM7 12h6v2H7v-2zm0 4h8v2H7v-2z"/>
+                            <path d="M15.5 14.5h2v2h-2v-2z"/>
+                        </svg>
+                    </div>
+                    <div>Markdown report</div>
+                </div>
+                <button class="{html_report_button_class}" id="html-report-trigger" type="button" {html_report_button_disabled_attr}>
+                    <div class="right-rail-icon icon-html">
+                        <svg viewBox="0 0 24 24" aria-hidden="true">
+                            <path d="M4 5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5zm9-1.5V9h4.5L13 3.5zM7 12h4v2H7v-2zm0 4h6v2H7v-2z"/>
+                            <path d="M14 12l2-2 2 2-2 2-2-2z"/>
+                        </svg>
+                    </div>
+                    <div>HTML report</div>
+                </button>
+            </div>
+            {html_report_block}
+        </aside>
+    """),
     unsafe_allow_html=True
 )
 
+html_report_clicked = st.button(
+    "HTML report action",
+    key="html_report_action_hidden",
+    help="HTML report action",
+    disabled=not html_report_action_enabled
+)
+
+components.html(
+    """
+    <script>
+    (function() {
+      const findHiddenButton = () => {
+        const buttons = Array.from(window.parent.document.querySelectorAll('button'));
+        return buttons.find((btn) => (btn.textContent || '').trim() === 'HTML report action');
+      };
+      const bind = () => {
+        const trigger = window.parent.document.getElementById('html-report-trigger');
+        const hidden = findHiddenButton();
+        if (hidden) {
+          const wrap = hidden.closest('[data-testid=\"stButton\"]') || hidden.parentElement;
+          if (wrap) wrap.style.display = 'none';
+        }
+        if (trigger && hidden && !trigger.dataset.bound) {
+          trigger.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            if (trigger.hasAttribute('disabled')) return;
+            hidden.click();
+          });
+          trigger.dataset.bound = '1';
+        }
+      };
+      const observer = new MutationObserver(bind);
+      observer.observe(window.parent.document.body, { childList: true, subtree: true });
+      bind();
+    })();
+    </script>
+    """,
+    height=0,
+    width=0
+)
+
+if html_report_clicked:
+    st.session_state.html_report_status = "processing"
+    st.session_state.html_report_last_dir = st.session_state.selected_output_dir
+    st.session_state.html_report_html = None
+    st.session_state.html_report_pending = True
+    st.rerun()
+
+if (
+    st.session_state.html_report_pending
+    and st.session_state.html_report_status == "processing"
+    and st.session_state.selected_output_dir
+):
+    st.session_state.html_report_pending = False
+    html_output = run_html_report_cli(st.session_state.selected_output_dir)
+    if html_output:
+        st.session_state.html_report_status = "ready"
+    else:
+        st.session_state.html_report_status = "failed"
+    st.rerun()
+
+# ------------------------------
+# Sidebar - Data Source Management
+# ------------------------------
 # Single page for data sources
-st.sidebar.subheader("🔍 Web Crawling")
+st.sidebar.subheader("Web Crawling")
 
 query = st.sidebar.text_input("Search Query", placeholder="Enter your search query...")
 limit = st.sidebar.slider("Number of Results", min_value=1, max_value=10, value=3)
 
-if st.sidebar.button("🚀 Start Crawling"):
+if st.sidebar.button("Start Crawling"):
     if query:
-        with st.spinner(f"Crawling for: {query}..."):
-            agent = CrawlerAgent()
-            docs = agent.run(query, limit=limit)
-            
-            # Update session state
-            st.session_state.documents = docs
-            st.session_state.pipeline_status["fetch"] = "completed"
-            st.session_state.pipeline_status["progress"] = 30
-            st.success(f"✅ Crawled {len(docs)} documents")
+        with st.sidebar:
+            with st.spinner("Processing..."):
+                run_crawl_cli(query, limit)
+        st.rerun()
     else:
         st.error("❌ Please enter a search query")
 
 st.sidebar.markdown("---")
-st.sidebar.subheader("📤 Local Upload")
+st.sidebar.subheader("Local Upload")
+st.sidebar.caption("Supported: PDF, Word, PPT, HTML, TXT, CSV, MD")
 
 uploaded_files = st.sidebar.file_uploader(
     "Upload Files",
     accept_multiple_files=True,
-    type=["pdf", "html", "txt", "csv", "md"]
+    type=["pdf", "doc", "docx", "ppt", "pptx", "html", "txt", "csv", "md"],
+    label_visibility="collapsed"
 )
 
-if st.sidebar.button("📋 Process Uploaded Files"):
+if st.sidebar.button("Process Uploaded Files"):
     if uploaded_files:
         with st.spinner("Processing uploaded files..."):
             local_docs = []
@@ -637,20 +1294,12 @@ with tab1:
 
     progress = st.session_state.pipeline_status["progress"]
     doc_count = len(st.session_state.documents)
-    structured_count = 0
-    if st.session_state.structured_result:
-        structured_count = len(st.session_state.structured_result.get("documents", []))
-
     st.markdown(
         textwrap.dedent(f"""
             <div class="stat-row">
                 <div class="stat-card">
                     <div class="stat-label">Raw Documents</div>
                     <div class="stat-value">{doc_count}</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-label">Structured Records</div>
-                    <div class="stat-value">{structured_count}</div>
                 </div>
                 <div class="stat-card">
                     <div class="stat-label">Pipeline Progress</div>
@@ -692,11 +1341,18 @@ with tab1:
         """).strip())
     steps_html = "\n".join(step_blocks)
 
+    loading = any(
+        status == "in_progress"
+        for key, status in st.session_state.pipeline_status.items()
+        if key != "progress"
+    )
+    loading_class = "loading" if loading else ""
+
     st.markdown(
         textwrap.dedent(f"""
             <div class="pipeline-board">
                 <div class="pipeline-title">Pipeline Flow</div>
-                <div class="progress-shell">
+                <div class="progress-shell {loading_class}">
                     <div class="progress-fill" style="width: {progress}%"></div>
                 </div>
                 <div class="pipeline-grid">
@@ -712,103 +1368,69 @@ with tab1:
     if st.session_state.documents:
         st.caption(f"Found {len(st.session_state.documents)} documents ready for processing.")
 
-        st.subheader("Document Preview")
-        for i, doc in enumerate(st.session_state.documents[:3]):
-            with st.expander(f"Document {i+1}: {doc.meta.title or doc.id[:20]}..."):
-                st.write(f"**Type:** {doc.doc_type.value}")
-                st.write(f"**Source:** {doc.meta.source_plugin or 'Local Upload'}")
-                if doc.clean_content:
-                    st.text_area("Preview", doc.clean_content[:500] + "...", height=150)
-                else:
-                    st.text_area("Preview", doc.content[:500] + "...", height=150)
+    st.subheader("Data Sources")
+    if st.session_state.documents:
+        for doc in st.session_state.documents:
+            label = "Unknown source"
+            if doc.meta:
+                if doc.meta.url:
+                    label = doc.meta.url
+                elif doc.meta.title:
+                    label = doc.meta.title
+                elif doc.meta.custom and doc.meta.custom.get("file_path"):
+                    label = doc.meta.custom.get("file_path")
+            st.write(f"- {label}")
+    else:
+        st.caption("No data sources yet. Start crawling or upload local files to populate this list.")
 
-    if st.button("▶️ Run Full Pipeline", disabled=st.session_state.pipeline_status["progress"] == 100):
-        run_pipeline()
+    # Removed "Run Full Pipeline" button per request
 
 with tab3:
     st.header("AI Assistant")
-    
-    if not st.session_state.structured_result:
-        st.info("ℹ️ No data available for AI analysis. Run the pipeline first.")
+
+    pending_prompt = st.session_state.pop("queued_prompt", None)
+    if st.session_state.get("pending_prompt"):
+        pending_prompt = st.session_state.pop("pending_prompt")
+    if pending_prompt:
+        run_assistant(pending_prompt)
+
+    st.markdown(
+        textwrap.dedent("""
+            <div class="assistant-shell">
+                <div class="assistant-header">
+                    <div class="assistant-title">Chat</div>
+                </div>
+            </div>
+        """),
+        unsafe_allow_html=True
+    )
+
+    if not st.session_state.chat_history:
+        st.markdown(
+            textwrap.dedent("""
+                <div class="assistant-shell">
+                    <div class="assistant-body">
+                        <div class="assistant-empty">
+                            <div class="assistant-empty-title">Add data to get started</div>
+                        </div>
+                    </div>
+                    <div class="assistant-footer">
+                        <div>Add data to get started</div>
+                        <div>0 data sources</div>
+                    </div>
+                </div>
+            """),
+            unsafe_allow_html=True
+        )
     else:
-        left, right = st.columns([2.2, 1], gap="large")
+        with st.container():
+            render_chat_history(st.session_state.chat_history)
 
-        with right:
-            stats = st.session_state.structured_result.get("stats", {})
-            doc_count = len(st.session_state.documents)
-            structured_count = len(st.session_state.structured_result.get("documents", []))
-
-            st.markdown(
-                textwrap.dedent(f"""
-                    <div class="side-card">
-                        <h4>Notebook Context</h4>
-                        <div class="source-meta">Raw documents: {doc_count}</div>
-                        <div class="source-meta">Structured records: {structured_count}</div>
-                        <div class="source-meta">Accepted / Rejected: {stats.get("accepted_count", 0)} / {stats.get("rejected_count", 0)}</div>
-                        <div class="source-meta">Iterations: {stats.get("iterations", 0)}</div>
-                    </div>
-                """),
-                unsafe_allow_html=True
-            )
-
-            sources = st.session_state.documents[:6]
-            source_rows = ""
-            if sources:
-                for doc in sources:
-                    title = doc.meta.title or doc.id[:16]
-                    source = doc.meta.source_plugin or "Local Upload"
-                    source_rows += f"""
-                    <div class="source-row">
-                        <div class="source-title">{title}</div>
-                        <div class="source-meta">{source}</div>
-                    </div>
-                    """
-            else:
-                source_rows = "<div class=\"source-meta\">No sources yet.</div>"
-
-            st.markdown(
-                textwrap.dedent(f"""
-                    <div class="side-card">
-                        <h4>Sources</h4>
-                        {source_rows}
-                    </div>
-                """),
-                unsafe_allow_html=True
-            )
-
-            st.markdown(
-                textwrap.dedent("<div class=\"side-card\"><h4>Suggested prompts</h4></div>"),
-                unsafe_allow_html=True
-            )
-            suggestions = [
-                "Summarize the key themes from the knowledge base.",
-                "List the most important entities and relationships.",
-                "Create a concise brief I can share with my team.",
-                "Highlight gaps or missing information."
-            ]
-            for suggestion in suggestions:
-                if st.button(suggestion, key=f"suggest-{suggestion}"):
-                    st.session_state.queued_prompt = suggestion
-
-        with left:
-            st.markdown(
-                textwrap.dedent("<div class=\"section-title\">Notebook Assistant</div>"),
-                unsafe_allow_html=True
-            )
-            st.caption("Ask questions, request summaries, or build a knowledge map from your structured data.")
-
-            chat_container = st.container()
-            prompt = st.chat_input("Ask about your data, request summaries, or explore patterns...")
-            prompt_to_run = st.session_state.pop("queued_prompt", None)
-
-            if prompt:
-                prompt_to_run = prompt
-
-            if prompt_to_run:
-                run_assistant(prompt_to_run)
-
-            with chat_container:
-                render_chat_history(st.session_state.chat_history)
+    st.markdown("<div style=\"height: 16px;\"></div>", unsafe_allow_html=True)
+    prompt = st.chat_input("Ask about your data, request summaries, or explore patterns...")
+    if prompt:
+        st.session_state.pending_prompt = prompt
+        st.experimental_rerun()
 
 # ------------------------------
 # Footer

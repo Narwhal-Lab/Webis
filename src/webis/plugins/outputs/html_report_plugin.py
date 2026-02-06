@@ -74,44 +74,49 @@ class HtmlReportPlugin(OutputPlugin):
         
         sources_text = "\n".join(sources_summary)
 
-        # 2. Construct Prompt (Adapted from legacy_v1/visual.py)
-        system_prompt = """你是一个专业的网页开发者。请生成完整、格式正确、可渲染的HTML5代码。
-
-重要要求：
-1) 必须生成完整HTML文档：以<!DOCTYPE html>开头，以</html>结束
-2) 所有标签必须正确闭合；不要输出 <p >、</ div > 这类“尖括号附近有空格”的标签
-3) 标签名/属性名必须为英文半角；属性值必须使用英文双引号 " 包裹（不要用中文引号“”）
-4) CSS/JS 必须使用英文半角标点（: ; ( ) , .），不要出现中文全角标点（例如：：；（））
-5) 不要输出类似 <<div>、<<footer> 这种重复尖括号的标签
-6) 不要输出 ```html 这类Markdown代码块包裹
-7) 只输出HTML代码，不要额外说明；输出前请自检并修复以上问题"""
+        # 2. Construct Prompt (Migrated from demo_html.py)
+        system_prompt = """You are a professional web developer. Generate valid, complete, standalone HTML5 code.
+        
+        CRITICAL REQUIREMENTS:
+        1. Start with <!DOCTYPE html> and end with </html>
+        2. Use modern, clean UI (Tailwind or inline CSS).
+        3. Visualize the "Core Content" effectively (cards, tables, or lists).
+        4. Add a footer section with:
+           - Dark background (dark gray/black, e.g., #2b2d42 or #1a1a1a)
+           - Two-column layout for data sources
+           - Blue headings (e.g., "Reference Sources" and "Additional Resources")
+           - Light gray text for source items
+           - "Generated based on Webis" at the very bottom in small, subtle style
+        5. NO explanations, NO markdown fences (```html). JUST the raw HTML code.
+        6. Ensure all tags are properly closed.
+        """
 
         user_content = f"""
-任务目标: {task}
+Task Objective: {task}
 
-核心数据 (JSON):
+Core Data (JSON):
 {json_str}
 
-参考来源:
+Reference Sources:
 {sources_text}
 """
 
-        user_prompt = f"""请为我创建美观的HTML网页，要求：
-
-设计规范：
-1. 完整HTML5结构
-2. 现代化浅色UI配色 (Modern UI)
-3. 合理的内容分区，网页结构不要过于简单
-4. 优雅的排版，使用卡片式布局展示“核心数据”
-5. 必须在显眼位置展示“任务目标”
-6. 在底部列出“参考来源”链接
-7. 内容来源只能使用“基于Webis生成”标志
-8. 可以添加合理配图或图表（使用简单的CSS/SVG绘制）
-
-内容来源（合理总结使用）：
-{user_content}
-
-重要：只输出HTML代码，不要额外说明。"""
+        user_prompt = f"""Task: {task}
+        
+        Core Content:
+        {user_content}
+        
+        Requirements:
+        - Create a beautiful, modern HTML page
+        - Add a dark footer section (dark gray/black background) with:
+          * Two columns: "Reference Sources" (left) and "Additional Resources" (right)
+          * Blue section headings
+          * Light gray text for source items from the provided reference sources
+          * Split the reference sources evenly between the two columns
+          * At the very bottom: "Generated based on Webis" in small, centered, subtle text
+        - Make the main content visually appealing with cards or modern layout
+        
+        Generate the HTML now."""
 
         # 3. Call LLM
         try:
@@ -122,8 +127,13 @@ class HtmlReportPlugin(OutputPlugin):
                 {"role": "user", "content": user_prompt}
             ]
             
-            # Using the primary model via the router
-            response = router.chat(messages)
+            # Using the same model parameters as demo_html.py
+            response = router.chat(
+                messages,
+                model="deepseek-v3.2",
+                temperature=0.7,
+                max_tokens=4000
+            )
             raw_html = response.content
             
         except Exception as e:
@@ -131,8 +141,17 @@ class HtmlReportPlugin(OutputPlugin):
             print(f"LLM Generation failed: {e}")
             return f"<html><body><h1>Error Generating Report</h1><p>{e}</p></body></html>"
 
-        # 4. Sanitize and Return
-        return self._sanitize_html(raw_html)
+        # 4. Sanitize, Validate, Repair (if needed)
+        sanitized_html = self._sanitize_html(raw_html)
+        issues = self._validate_html(sanitized_html)
+        if issues:
+            try:
+                repaired_html = self._repair_html(router, sanitized_html, issues)
+                sanitized_html = self._sanitize_html(repaired_html)
+            except Exception as e:
+                print(f"LLM Repair failed: {e}")
+
+        return sanitized_html
 
     def _strip_markdown_fences(self, text: str) -> str:
         stripped = text.strip()
@@ -179,3 +198,39 @@ class HtmlReportPlugin(OutputPlugin):
 
         s = re.sub(r"<style[^>]*>(.*?)</style>", _normalize_style_block, s, flags=re.DOTALL | re.IGNORECASE)
         return s.strip()
+
+    def _validate_html(self, html: str) -> List[str]:
+        issues = []
+        if "<!DOCTYPE html" not in html and "<!doctype html" not in html:
+            issues.append("missing_doctype")
+        if "</html>" not in html.lower():
+            issues.append("missing_html_close")
+        if re.search(r"<<\s*/?\s*[A-Za-z]", html):
+            issues.append("double_angle_brackets_in_tags")
+        if "```" in html:
+            issues.append("markdown_fence_remaining")
+        if any(ch in html for ch in ["“", "”", "‘", "’"]):
+            issues.append("curly_quotes_remaining")
+        return issues
+
+    def _repair_html(self, router, broken_html: str, issues: List[str]) -> str:
+        system_prompt = (
+            "You are an HTML Repair Expert. "
+            f"The following HTML has issues: {', '.join(issues)}.\n\n"
+            "Please fix the HTML so it is valid HTML5.\n"
+            "- Ensure <!DOCTYPE html> is present.\n"
+            "- Fix broken tags.\n"
+            "- Remove markdown fences.\n"
+            "- Return ONLY the fixed HTML."
+        )
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": broken_html},
+        ]
+        response = router.chat(
+            messages,
+            model="deepseek-v3.2",
+            temperature=0.1,
+            max_tokens=8000
+        )
+        return response.content

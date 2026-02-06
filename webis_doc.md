@@ -4,17 +4,22 @@
 
 ## 1. 数据源 (Data Sources)
 
-Webis 集成了多种数据获取工具，覆盖新闻、代码、学术和通用搜索等领域。所有工具均位于 `crawler/` 目录下。
+Webis 集成了多种数据获取工具，覆盖新闻、代码、学术和通用搜索等领域。数据源插件位于 `src/webis/plugins/sources/` 目录下。
 
 | 数据源组件 | 对应文件 | 描述 | 依赖配置 (环境变量) |
 | :--- | :--- | :--- | :--- |
-| **Hacker News** | `crawler/hn_tool.py` | 获取 Hacker News 热门科技新闻及评论，自动抓取原网页内容。 | 无 |
-| **GNews** | `crawler/gnews_tool.py` | 全球新闻搜索，支持多语言、多地区筛选。 | `GNEWS_API_KEY` |
-| **SerpApi (Google)** | `crawler/serpapi_tool.py` | 基于 Google 搜索的通用信息获取，支持高精度搜索。 | `SERPAPI_API_KEY` |
-| **GitHub** | `crawler/github_api_tools.py` | 搜索开源代码仓库，获取 README 和项目元数据。 | `GITHUB_TOKEN` (可选，防限流) |
-| **Baidu Search** | `crawler/baidu_mcp_tool.py` | 百度搜索集成，适合中文环境信息获取。 | `BAIDU_AISEARCH_BEARER` |
-| **Semantic Scholar** | `crawler/semantic_scholar.py` | 学术论文搜索，获取论文摘要、引用等信息。 | 无 |
-| **DuckDuckGo** | `crawler/ddg_scrapy_tool.py` | 隐私优先的通用搜索，无需 API Key。 | 无 |
+| **DuckDuckGo** | `src/webis/plugins/sources/duckduckgo_plugin.py` | DuckDuckGo 搜索并下载完整网页内容。 | 无 |
+| **Hacker News** | `src/webis/plugins/sources/hackernews_plugin.py` | 基于 HN Algolia 搜索并抓取原文内容。 | 无 |
+| **GNews** | `src/webis/plugins/sources/gnews_plugin.py` | Google News 搜索，支持 API + 抓取回退。 | `GNEWS_API_KEY` (可选，启用官方 API) |
+| **SerpApi (Google)** | `src/webis/plugins/sources/serpapi_plugin.py` | SerpApi 搜索 (Google/Bing 等)。 | `SERPAPI_API_KEY` |
+| **Serper.dev (Google)** | `src/webis/plugins/sources/serper_plugin.py` | Serper.dev 搜索 (Google API Wrapper)。 | `SERPER_API_KEY` |
+| **Tavily Search** | `src/webis/plugins/sources/managed_search_plugin.py` | Tavily 托管搜索，适合研究/问答。 | `TAVILY_API_KEY` |
+| **Bocha Search** | `src/webis/plugins/sources/managed_search_plugin.py` | Bocha AI Web Search。 | `BOCHA_API_KEY` |
+| **GitHub** | `src/webis/plugins/sources/github_plugin.py` | 搜索并下载完整仓库源码。 | `GITHUB_TOKEN` (可选，防限流) |
+| **Semantic Scholar + arXiv** | `src/webis/plugins/sources/semantic_scholar_plugin.py` | 学术论文搜索，优先下载 PDF。 | `S2_API_KEY` (可选) |
+| **Exa + Firecrawl** | `src/webis/plugins/sources/exa_firecrawl_plugin.py` | Exa 神经搜索 + Firecrawl 深度抓取。 | `EXA_API_KEY`, `FIRECRAWL_API_KEY` 或 `EXA_MCP_URL`, `FIRECRAWL_MCP_URL` |
+| **Bright Data** | `src/webis/plugins/sources/bright_data_plugin.py` | BrightData SDK 搜索与抓取。 | `BRIGHTDATA_API_TOKEN` |
+| **Baidu Search** | `src/webis/plugins/sources/baidu_plugin.py` | 百度搜索并抓取原网页内容 (需手动注册)。 | 无 |
 
 ## 2. 中间处理流程 (Intermediate Processes)
 
@@ -76,12 +81,21 @@ Webis 集成了多种数据获取工具，覆盖新闻、代码、学术和通�
 要完整运行 Webis 的所有功能，建议配置以下环境变量 (`.env.local`)：
 
 ```bash
-# 核心大模型能力 (必须)
+# 核心大模型能力 (至少配置一个)
+WENDALOG_API_KEY="sk-..."
+# 或
 SILICONFLOW_API_KEY="sk-..."
+OPENAI_API_KEY="sk-..."
+ANTHROPIC_API_KEY="sk-..."
 
 # 数据源增强 (按需)
-GNEWS_API_KEY="..."
-SERPAPI_API_KEY="..."
-GITHUB_TOKEN="..."
-BAIDU_AISEARCH_BEARER="..."
+SERPER_API_KEY="..."
+TAVILY_API_KEY="..."
+BOCHA_API_KEY="..."
+S2_API_KEY="..."
+EXA_API_KEY="..."
+FIRECRAWL_API_KEY="..."
+EXA_MCP_URL="http://localhost:xxxx"        # 如果走 MCP bridge
+FIRECRAWL_MCP_URL="http://localhost:xxxx"  # 如果走 MCP bridge
+BRIGHTDATA_API_TOKEN="..."
 ```

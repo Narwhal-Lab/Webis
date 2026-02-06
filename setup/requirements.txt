@@ -36,3 +36,15 @@ tenacity>=8.2.0  # Retry decorator for network requests
 # paddlepaddle>=2.5.0
 # pytesseract>=0.3.10
 # Pillow>=8.0.0
+
+# Webis Visualizer (UI + visualization)
+streamlit>=1.28.0
+streamlit-chat>=0.1.0
+streamlit-aggrid>=0.3.0
+streamlit-ace>=0.1.0
+plotly>=5.17.0
+pyvis>=0.3.0
+networkx>=3.2.0
+pandas>=1.5.0,<2.0.0
+openpyxl>=3.1.0
+markdown>=3.5.0
