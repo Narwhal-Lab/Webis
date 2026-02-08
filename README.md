@@ -15,9 +15,36 @@
 
 ## 📦 Installation
 
+### From the project root, use one of the following one-command setup scripts:
+
+#### Option 1: Conda setup
+
 ```bash
-cd webis
+bash setup/conda_setup.sh
+```
+
+#### Option 2: uv setup
+
+```bash
+bash setup/uv_setup.sh
+```
+
+### Install Webis CLI：
+
+```bash
 pip install -e .
+```
+
+### Download embedding model for RAG knowledge base
+
+`sentence-transformers/all-MiniLM-L6-v2` is used to generate text embeddings when building the RAG knowledge base.
+
+```bash
+# Optional mirror for mainland China
+export HF_ENDPOINT=https://hf-mirror.com
+export HF_HUB_DOWNLOAD_TIMEOUT=120
+
+hf download sentence-transformers/all-MiniLM-L6-v2
 ```
 
 ## 🛠️ Usage
@@ -26,34 +53,22 @@ Webis primarily runs via the `webis` CLI.
 
 ### 1. End-to-End Run
 
-Execute the full pipeline: identify data sources -> crawl -> clean -> extract -> visual report.
+Execute the full pipeline: identify data sources -> crawl -> clean -> extract -> build RAG knowledge base.
 
 ```bash
-# Example: Find news about Peking University in the last three months and generate a report
-webis run "Find news about Peking University in the last three months and generate a report" --limit 3
+# Example: Find news about Peking University in the last three months and build a RAG knowledge base
+webis run "Find news about Peking University in the last three months" --limit 3
 ```
 
-* `report.html`: A beautiful HTML report (if extraction succeeds).
 * `result.json`: Structured extraction results.
 * `documents.json`: **Raw and cleaned content** of all crawled documents (saved even if extraction fails).
+* `rag_store.json`: RAG knowledge base built from `documents.json`.
 
 ## ⚠️ Configuration
 
 You must configure API keys in `.env` for Agent features to work.
 
-### 2. Crawl Only
-
-Only fetch relevant data.
-
-```bash
-webis crawl "Python 3.13 new features" --limit 5 
-```
-
-* `output/{timestamp}/documents.json`
-* `output/{timestamp}/result.json`
-
-
-### 3. Extract Only
+### 2. Extract Only
 
 Use LLMs to extract structured data from local files.
 
@@ -65,7 +80,7 @@ webis extract ./report.pdf --task "Extract financial summary"
 webis extract ./cv.pdf --schema ./schemas/resume.json
 ```
 
-### 4. Generate HTML Report
+### 3. Generate HTML Report
 
 Generate `report.html` from an existing `result.json` (optional `documents.json`).
 
@@ -74,6 +89,22 @@ webis html-report ./output/20260204_113243/result.json --documents ./output/2026
 ```
 
 By default, output is written to the directory containing `result.json`.
+
+### 4. Generate Markdown Report from RAG Store
+
+Generate a markdown report directly from an existing `rag_store.json`.
+
+```bash
+webis markdown-report ./output/20260208_105119/rag_store.json
+```
+
+Optional: add a report focus query.
+
+```bash
+webis markdown-report ./output/20260208_105119/rag_store.json --query "Recent trends about Peking University news"
+```
+
+The generated markdown report is saved in the same directory as `rag_store.json`.
 
 ## 🖥️ Visualizer
 

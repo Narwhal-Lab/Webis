@@ -171,6 +171,15 @@ class CrawlerAgent:
             ]
             # Filter out excluded tools from default plan
             plan = [step for step in plan if step.get("tool") not in excluded_tools]
+            if not plan:
+                print("ℹ️ INFO: Exclusions emptied default plan. Retrying with full default tool list.")
+                plan = [
+                    {"tool": "exa_firecrawl_crawler", "query": task},
+                    {"tool": "serper_search", "query": task},
+                    {"tool": "tavily_search", "query": task},
+                    {"tool": "bocha_search", "query": task},
+                    {"tool": "bright_data", "query": task}
+                ]
 
         self.last_used_tools = [step['tool'] for step in plan]
 

@@ -5,15 +5,15 @@ import shutil
 import json
 import logging
 import subprocess
+import re
 from pathlib import Path
-from typing import List
+from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
 
 from webis.core.pipeline import Pipeline
 from webis.core.schema import WebisDocument, DocumentType, DocumentMetadata, PipelineContext, StructuredResult
 from webis.core.plugin import get_default_registry
-from webis.core.agent.crawler_agent import CrawlerAgent
 
 # Import plugins to register them
 import webis.plugins.sources
@@ -23,6 +23,298 @@ import webis.plugins.outputs
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("webis.cli")
+
+
+def _prepare_rag_documents_from_json(documents_path: str) -> List[Dict[str, Any]]:
+    """
+    Load crawl output documents.json and convert entries into RAG manager input format.
+    """
+    with open(documents_path, "r", encoding="utf-8") as f:
+        docs_data = json.load(f)
+
+    rag_documents: List[Dict[str, Any]] = []
+    for idx, doc in enumerate(docs_data):
+        if not isinstance(doc, dict):
+            continue
+
+        content = (doc.get("clean_content") or doc.get("content") or "").strip()
+        if not content:
+            continue
+
+        meta = doc.get("meta") if isinstance(doc.get("meta"), dict) else {}
+        custom = meta.get("custom") if isinstance(meta.get("custom"), dict) else {}
+
+        source = (
+            meta.get("url")
+            or meta.get("title")
+            or custom.get("file_path")
+            or doc.get("id")
+            or f"document_{idx + 1}"
+        )
+
+        rag_documents.append(
+            {
+                "content": content,
+                "source": str(source),
+                "metadata": {
+                    "doc_id": doc.get("id"),
+                    "doc_type": doc.get("doc_type"),
+                    "title": meta.get("title"),
+                    "source_plugin": meta.get("source_plugin"),
+                    "documents_json": os.path.abspath(documents_path),
+                },
+            }
+        )
+
+    return rag_documents
+
+
+def _build_rag_knowledge_base_from_documents(documents_path: str) -> Optional[str]:
+    """
+    Build RAG knowledge base from documents.json using strict HuggingFace embeddings.
+    """
+    from webis.core.rag.manager import RAGManager
+    from webis.plugins.processors.embedding_plugin import EmbeddingGemmaPlugin
+
+    # Force HuggingFace mirror settings before loading embedding model.
+    os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+    os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = "120"
+    logger.info(
+        "Using HuggingFace mirror for RAG embedding build: HF_ENDPOINT=%s, HF_HUB_DOWNLOAD_TIMEOUT=%s",
+        os.environ["HF_ENDPOINT"],
+        os.environ["HF_HUB_DOWNLOAD_TIMEOUT"],
+    )
+
+    rag_documents = _prepare_rag_documents_from_json(documents_path)
+    if not rag_documents:
+        logger.warning("No valid documents available for RAG build.")
+        return None
+
+    # Strict HuggingFace embedding mode: fail fast if model init or embedding generation fails.
+    embedding_processor = EmbeddingGemmaPlugin(model_type="gemma", device="cpu")
+    for idx, doc in enumerate(rag_documents):
+        embedding = embedding_processor.embed_text(doc.get("content", ""))
+        if embedding is None:
+            source = doc.get("source", f"document_{idx + 1}")
+            raise RuntimeError(f"Failed to generate HuggingFace embedding for source: {source}")
+        doc["embeddings"] = [embedding]
+
+    rag_store_path = os.path.join(os.path.dirname(os.path.abspath(documents_path)), "rag_store.json")
+    rag_manager = RAGManager(
+        rag_store_path=rag_store_path,
+        auto_load=False,
+        use_external_embeddings=True,
+        embedding_processor=embedding_processor,
+    )
+    rag_manager.add_crawled_documents(rag_documents)
+    rag_manager.build_and_save()
+
+    logger.info(f"Built RAG knowledge base with {len(rag_documents)} docs: {rag_store_path}")
+    print(f"🧠 RAG store saved to: {rag_store_path}")
+    return rag_store_path
+
+
+def _first_sentence(text: str, max_chars: int = 260) -> str:
+    normalized = " ".join((text or "").split())
+    if not normalized:
+        return ""
+    parts = re.split(r"(?<=[.!?。！？])\s+", normalized, maxsplit=1)
+    sentence = parts[0] if parts else normalized
+    if len(sentence) > max_chars:
+        return sentence[:max_chars].rstrip() + "..."
+    return sentence
+
+
+def _load_rag_documents(rag_store_path: str) -> List[Dict[str, Any]]:
+    rag_path = Path(rag_store_path).expanduser().resolve()
+    if not rag_path.exists():
+        raise FileNotFoundError(f"rag_store.json not found: {rag_path}")
+
+    with open(rag_path, "r", encoding="utf-8") as f:
+        rag_data = json.load(f)
+
+    docs_map = rag_data.get("documents", {}) if isinstance(rag_data, dict) else {}
+    if not isinstance(docs_map, dict) or not docs_map:
+        raise ValueError(f"No documents found in RAG store: {rag_path}")
+
+    dedup_seen = set()
+    docs: List[Dict[str, Any]] = []
+    for raw_doc in docs_map.values():
+        if not isinstance(raw_doc, dict):
+            continue
+        content = (raw_doc.get("content") or "").strip()
+        if not content:
+            continue
+        source = raw_doc.get("source") or "Unknown"
+        dedup_key = (str(source), content)
+        if dedup_key in dedup_seen:
+            continue
+        dedup_seen.add(dedup_key)
+        docs.append(
+            {
+                "source": str(source),
+                "content": content,
+                "structured_data": raw_doc.get("structured_data"),
+                "metadata": raw_doc.get("metadata") if isinstance(raw_doc.get("metadata"), dict) else {},
+            }
+        )
+
+    if not docs:
+        raise ValueError(f"No valid document entries found in RAG store: {rag_path}")
+    return docs
+
+
+def _tokenize_for_ranking(text: str) -> List[str]:
+    return re.findall(r"[A-Za-z0-9\u4e00-\u9fff]+", (text or "").lower())
+
+
+def _select_report_documents(docs: List[Dict[str, Any]], query: Optional[str], top_k: int = 5) -> tuple[List[Dict[str, Any]], List[float]]:
+    query_tokens = set(_tokenize_for_ranking(query or ""))
+
+    ranked: List[tuple[float, Dict[str, Any]]] = []
+    for doc in docs:
+        content = doc.get("content", "")
+        source = doc.get("source", "")
+        if not query_tokens:
+            score = min(len(content) / 4000.0, 1.0)
+        else:
+            doc_tokens = set(_tokenize_for_ranking(f"{source}\n{content}"))
+            overlap = len(query_tokens & doc_tokens)
+            score = overlap / max(len(query_tokens), 1)
+            score += min(len(content) / 8000.0, 0.1)  # Slightly favor richer context
+        ranked.append((float(score), doc))
+
+    ranked.sort(key=lambda x: x[0], reverse=True)
+    selected = ranked[: min(max(top_k, 1), len(ranked))]
+    selected_docs = [doc for _, doc in selected]
+    selected_scores = [max(score, 0.001) for score, _ in selected]
+    return selected_docs, selected_scores
+
+
+def _generate_markdown_report_from_rag_store_fallback(rag_store_path: str, query: Optional[str] = None) -> str:
+    rag_path = Path(rag_store_path).expanduser().resolve()
+    docs = _load_rag_documents(str(rag_path))
+
+    from collections import Counter
+    from datetime import datetime
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    total_docs = len(docs)
+    lengths = [len((d.get("content") or "").strip()) for d in docs]
+    non_empty = sum(1 for x in lengths if x > 0)
+    avg_len = (sum(lengths) / total_docs) if total_docs else 0.0
+
+    source_counter = Counter((d.get("source") or "Unknown") for d in docs)
+    top_sources = source_counter.most_common(8)
+    top_docs = sorted(docs, key=lambda d: len((d.get("content") or "")), reverse=True)[:5]
+
+    lines: List[str] = []
+    lines.append("# Research Report")
+    lines.append("")
+    lines.append(f"**Generated:** {now}")
+    lines.append("")
+
+    if query:
+        lines.append("## Query")
+        lines.append(f"> {query}")
+        lines.append("")
+
+    lines.append("## Overview")
+    lines.append(f"- **RAG Store:** `{rag_path}`")
+    lines.append(f"- **Documents in Knowledge Base:** {total_docs}")
+    lines.append(f"- **Non-empty Documents:** {non_empty}")
+    lines.append(f"- **Average Content Length:** {avg_len:.1f} characters")
+    lines.append("")
+
+    lines.append("## Executive Summary")
+    lines.append(
+        "This report is generated directly from the existing RAG knowledge base. "
+        "It summarizes document coverage and highlights the most information-dense sources."
+    )
+    lines.append("")
+
+    lines.append("## Key Findings")
+    if top_docs:
+        for i, doc in enumerate(top_docs, 1):
+            source = doc.get("source", "Unknown")
+            snippet = _first_sentence(doc.get("content", ""))
+            lines.append(f"{i}. **{source}**")
+            if snippet:
+                lines.append(f"   {snippet}")
+            else:
+                lines.append("   (No readable content)")
+    else:
+        lines.append("No key findings available.")
+    lines.append("")
+
+    lines.append("## Source Distribution")
+    if top_sources:
+        for source, cnt in top_sources:
+            lines.append(f"- **{source}**: {cnt} document(s)")
+    else:
+        lines.append("- No sources available.")
+    lines.append("")
+
+    lines.append("## Metadata")
+    lines.append("")
+    lines.append(f"- **Total Sources:** {len(source_counter)}")
+    lines.append(f"- **Report Type:** Markdown")
+    lines.append("")
+
+    markdown_content = "\n".join(lines)
+    output_path = rag_path.parent / f"report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
+    output_path.write_text(markdown_content, encoding="utf-8")
+    return str(output_path)
+
+
+def _generate_markdown_report_from_rag_store(rag_store_path: str, query: Optional[str] = None) -> str:
+    """
+    Generate markdown report using the historical high-quality RAG report chain:
+    ReportGenerationTask (two-stage LLM report synthesis) + RAG context.
+    """
+    from datetime import datetime
+    from webis.apps.rag.tasks import ReportGenerationTask
+
+    rag_path = Path(rag_store_path).expanduser().resolve()
+    docs = _load_rag_documents(str(rag_path))
+
+    report_query = (query or "").strip() or "Summarize key findings from this RAG knowledge base."
+    selected_docs, scores = _select_report_documents(docs, report_query, top_k=5)
+
+    context_blocks = []
+    for doc, score in zip(selected_docs, scores):
+        context_blocks.append(
+            f"[Source: {doc.get('source', 'Unknown')}] (Relevance: {score:.2f})\n{doc.get('content', '')}"
+        )
+    context_text = "\n\n".join(context_blocks)
+
+    rag_context = {
+        "query": report_query,
+        "retrieved_documents": selected_docs,
+        "context_text": context_text,
+        "structured_data": {},
+        "scores": scores,
+        "metadata": {
+            "retrieval_count": len(selected_docs),
+            "top_k": len(selected_docs),
+            "webis_fetched": False,
+        },
+    }
+
+    report_task = ReportGenerationTask(include_raw_data=True, output_format="markdown")
+    task_result = report_task.execute(rag_context)
+    if not task_result.get("success") or not task_result.get("report_content"):
+        error_msg = task_result.get("error") or "unknown report generation error"
+        raise RuntimeError(
+            "ReportGenerationTask failed. "
+            "Please check LLM API configuration/connectivity and retry. "
+            f"Details: {error_msg}"
+        )
+
+    markdown_content = task_result["report_content"]
+    output_path = rag_path.parent / f"report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
+    output_path.write_text(markdown_content, encoding="utf-8")
+    return str(output_path)
 
 def main():
     # 0. Auto-Init Configuration (Onboarding)
@@ -60,12 +352,6 @@ def main():
     run_parser.add_argument("--limit", type=int, default=5, help="Max results")
     run_parser.add_argument("--output", "-o", help="Output directory")
 
-    # crawl command
-    crawl_parser = subparsers.add_parser("crawl", help="Crawl data for a task")
-    crawl_parser.add_argument("task", help="Task or Query")
-    crawl_parser.add_argument("--limit", type=int, default=5)
-    crawl_parser.add_argument("--output", "-o", help="Output file (JSON)")
-
     # extract command
     extract_parser = subparsers.add_parser("extract", help="Extract structure from files")
     extract_parser.add_argument("files", nargs="+", help="Files to extract from")
@@ -79,6 +365,14 @@ def main():
     html_report_parser.add_argument("--documents", help="Path to documents.json")
     html_report_parser.add_argument("--output", "-o", help="Output directory")
 
+    # markdown-report command (from rag_store.json)
+    markdown_report_parser = subparsers.add_parser(
+        "markdown-report",
+        help="Generate markdown report from rag_store.json",
+    )
+    markdown_report_parser.add_argument("rag_store", help="Path to rag_store.json")
+    markdown_report_parser.add_argument("--query", help="Optional report focus query")
+
     # visualizer command
     visualizer_parser = subparsers.add_parser("visualizer", help="Launch Webis Visualizer UI (Streamlit)")
 
@@ -86,12 +380,12 @@ def main():
 
     if args.command == "run":
         cmd_run(args.task, args.limit, args.output)
-    elif args.command == "crawl":
-        cmd_crawl(args.task, args.limit, args.output)
     elif args.command == "extract":
         cmd_extract(args.files, args.task, args.schema, args.output)
     elif args.command == "html-report":
         cmd_html_report(args.result, args.documents, args.output)
+    elif args.command == "markdown-report":
+        cmd_markdown_report(args.rag_store, args.query)
     elif args.command == "visualizer":
         cmd_visualizer()
     else:
@@ -170,8 +464,8 @@ def cmd_run(task: str, limit: int, output_dir: str = None):
     else:
         logger.warning("LLM Extractor not found. Skipping extraction.")
         
-    # Phase 4: Reporting
-    logger.info("Phase 4: Generating Report...")
+    # Phase 4: Build RAG knowledge base
+    logger.info("Phase 4: Building RAG Knowledge Base...")
     
     # Determine output directory (Auto-save)
     if not output_dir:
@@ -182,29 +476,26 @@ def cmd_run(task: str, limit: int, output_dir: str = None):
     os.makedirs(output_dir, exist_ok=True)
 
     # Save Full Documents (Raw & Cleaned)
-    if processed_docs:
-        docs_path = os.path.join(output_dir, "documents.json")
-        docs_data = [doc.model_dump(mode="json") for doc in processed_docs]
-        with open(docs_path, "w", encoding="utf-8") as f:
-            json.dump(docs_data, f, indent=2, ensure_ascii=False)
-        logger.info(f"📁 Raw/Cleaned data saved to: {docs_path}")
+    docs_path = os.path.join(output_dir, "documents.json")
+    docs_data = [doc.model_dump(mode="json") for doc in processed_docs]
+    with open(docs_path, "w", encoding="utf-8") as f:
+        json.dump(docs_data, f, indent=2, ensure_ascii=False)
+    logger.info(f"📁 Raw/Cleaned data saved to: {docs_path}")
 
     if extraction_result:
         # Save JSON
         json_path = os.path.join(output_dir, "result.json")
         with open(json_path, "w", encoding="utf-8") as f:
             f.write(json.dumps(extraction_result.model_dump(mode="json"), indent=2, ensure_ascii=False))
-        
-        # Generate HTML Report
-        html_plugin = registry.get_output("html_report")
-        if html_plugin:
-            html_plugin.save(extraction_result, context=context, output_dir=output_dir, documents=processed_docs)
-            print(f"\n✨ Report generated: {os.path.join(output_dir, 'report.html')}")
-            print(f"📁 JSON saved to:   {json_path}")
-        else:
-             logger.warning("HtmlReportPlugin not found.")
+        print(f"\n📁 JSON saved to:   {json_path}")
     else:
-        logger.error("No result to save.")
+        logger.warning("No extraction result to save.")
+
+    try:
+        _build_rag_knowledge_base_from_documents(docs_path)
+    except Exception as e:
+        logger.error(f"Failed to build RAG knowledge base from documents.json: {e}")
+        raise
 
 def cmd_visualizer():
     project_root = Path(__file__).resolve().parents[2]
@@ -220,54 +511,6 @@ def cmd_visualizer():
     cmd = [sys.executable, "-m", "streamlit", "run", str(app_path)]
     logger.info("Launching Webis Visualizer...")
     subprocess.run(cmd, check=False, cwd=str(project_root))
-
-def cmd_crawl(task: str, limit: int, output_file: str = None):
-    # Align crawl outputs with run outputs under output/{timestamp}/
-    import datetime
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_dir = os.path.join("output", timestamp)
-    default_output_file = os.path.join(output_dir, "documents.json")
-
-    extra_output_file = None
-    if output_file:
-        # If a directory is provided, store documents.json inside it
-        if os.path.isdir(output_file) or output_file.endswith(os.sep):
-            extra_output_file = os.path.join(output_file.rstrip(os.sep), "documents.json")
-        else:
-            extra_output_file = output_file
-
-    os.makedirs(output_dir, exist_ok=True)
-
-    context = PipelineContext(task=task, output_dir=output_dir)
-    agent = CrawlerAgent()
-    docs = agent.run(task, limit=limit, context=context)
-    
-    data = [doc.model_dump(mode="json") for doc in docs]
-    print(json.dumps(data, indent=2, ensure_ascii=False))
-    
-    # Always write default output to match `webis run`
-    with open(default_output_file, "w") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-    logger.info(f"Saved {len(docs)} docs to {default_output_file}")
-
-    # Extract structured result from crawled documents
-    registry = get_default_registry()
-    extractor = registry.get_extractor("llm_extractor")
-    if extractor:
-        result = extractor.extract(docs, context=context)
-        json_path = os.path.join(output_dir, "result.json")
-        with open(json_path, "w") as f:
-            f.write(json.dumps(result.model_dump(mode="json"), indent=2, ensure_ascii=False))
-        print(f"\n📁 JSON saved to:   {json_path}")
-    else:
-        logger.warning("LLM Extractor not found. Skipping extraction.")
-
-    # Optionally write to user-specified path for backward compatibility
-    if extra_output_file:
-        os.makedirs(os.path.dirname(extra_output_file) or ".", exist_ok=True)
-        with open(extra_output_file, "w") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-        logger.info(f"Saved {len(docs)} docs to {extra_output_file}")
 
 def cmd_extract(files: List[str], task: str, schema_path: str = None, output_file: str = None):
     registry = get_default_registry()
@@ -346,6 +589,15 @@ def cmd_html_report(result_path: str, documents_path: str = None, output_dir: st
     context = PipelineContext(task="Generate HTML report", output_dir=output_dir)
     html_plugin.save(result, context=context, output_dir=output_dir, documents=documents)
     print(f"\n✨ Report generated: {os.path.join(output_dir, 'report.html')}")
+
+
+def cmd_markdown_report(rag_store_path: str, query: str = None):
+    try:
+        output_path = _generate_markdown_report_from_rag_store(rag_store_path, query=query)
+        print(f"\n📝 Markdown report generated: {output_path}")
+    except Exception as e:
+        logger.error(f"Failed to generate markdown report from RAG store: {e}")
+        raise
 
 if __name__ == "__main__":
     main()

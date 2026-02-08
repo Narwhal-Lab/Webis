@@ -15,9 +15,36 @@
 
 ## 📦 安装
 
+### 在项目根目录下，使用一键安装脚本
+
+#### 方式 1：Conda 安装
+
 ```bash
-cd webis
+bash setup/conda_setup.sh
+```
+
+#### 方式 2：uv 安装
+
+```bash
+bash setup/uv_setup.sh
+```
+
+### 安装Webis CLI：
+
+```bash
 pip install -e .
+```
+
+### 下载用于构建 RAG 知识库的嵌入模型
+
+`sentence-transformers/all-MiniLM-L6-v2` 用于在构建 RAG 知识库时生成文本向量（Embedding）。
+
+```bash
+# 中国大陆网络可选镜像
+export HF_ENDPOINT=https://hf-mirror.com
+export HF_HUB_DOWNLOAD_TIMEOUT=120
+
+hf download sentence-transformers/all-MiniLM-L6-v2
 ```
 
 ## 🛠️ 使用
@@ -26,34 +53,22 @@ Webis 主要通过 `webis` CLI 运行。
 
 ### 1. 端到端执行
 
-执行完整流水线：识别数据源 -> 抓取 -> 清洗 -> 抽取 -> 可视化报告。
+执行完整流水线：识别数据源 -> 抓取 -> 清洗 -> 抽取 -> 构建 RAG 知识库。
 
 ```bash
-# 示例：查找过去三个月关于北京大学的新闻并生成报告
-webis run "Find news about Peking University in the last three months and generate a report" --limit 3
+# 示例：查找过去三个月关于北京大学的新闻并构建 RAG 知识库
+webis run "Find news about Peking University in the last three months" --limit 3
 ```
 
-* `report.html`：美观的 HTML 报告（抽取成功时）。
 * `result.json`：结构化抽取结果。
 * `documents.json`：所有抓取文档的**原始与清洗内容**（即使抽取失败也会保存）。
+* `rag_store.json`：基于 `documents.json` 构建的 RAG 知识库。
 
 ## ⚠️ 配置
 
 必须在 `.env` 中配置 API Key，Agent 功能才能正常工作。
 
-### 2. 仅抓取
-
-只抓取相关数据。
-
-```bash
-webis crawl "Python 3.13 new features" --limit 5 
-```
-
-* `output/{timestamp}/documents.json`：结构化抽取结果。
-* `output/{timestamp}/result.json`：所有抓取文档的**原始与清洗内容**（即使抽取失败也会保存）。
-
-
-### 3. 仅抽取
+### 2. 仅抽取
 
 使用 LLM 从本地文件抽取结构化数据。
 
@@ -65,7 +80,7 @@ webis extract ./report.pdf --task "Extract financial summary"
 webis extract ./cv.pdf --schema ./schemas/resume.json
 ```
 
-### 4. 生成 HTML 报告
+### 3. 生成 HTML 报告
 
 基于已有的 `result.json`（可选 `documents.json`）生成 `report.html`。
 
@@ -74,6 +89,22 @@ webis html-report ./output/20260204_113243/result.json --documents ./output/2026
 ```
 
 默认输出到 `result.json` 所在目录。
+
+### 4. 从 RAG 知识库生成 Markdown 报告
+
+基于已有的 `rag_store.json` 直接生成 Markdown 报告。
+
+```bash
+webis markdown-report ./output/20260208_105119/rag_store.json
+```
+
+可选：添加报告关注问题。
+
+```bash
+webis markdown-report ./output/20260208_105119/rag_store.json --query "近期关于北京大学新闻的趋势"
+```
+
+生成的 Markdown 报告会保存到 `rag_store.json` 的同一目录下。
 
 ## 🖥️ 可视化界面
 

@@ -11,14 +11,15 @@ import html as html_lib
 import base64
 import textwrap
 import subprocess
+import threading
+from datetime import datetime
 from pathlib import Path
+import logging
 
 # Add parent directory to path so we can import Webis modules
 sys.path.append(str(Path(__file__).parent.parent.parent))
 
-from webis.core.agent.crawler_agent import CrawlerAgent
-from webis.core.intelligent_pipeline import IntelligentPipeline
-from webis.core.schema import WebisDocument, PipelineContext
+from webis.core.schema import WebisDocument
 from webis.core.llm.base import get_default_router
 
 try:
@@ -27,6 +28,8 @@ except Exception:
     md = None
 
 BASE_DIR = Path(__file__).parent
+QUERY_HISTORY_FILE = BASE_DIR / "query_output_history.jsonl"
+logger = logging.getLogger("webis.visualizer")
 
 # ------------------------------
 # Configuration
@@ -80,6 +83,22 @@ def init_session_state():
         st.session_state.pending_select_dir = None
     if "html_report_link" not in st.session_state:
         st.session_state.html_report_link = None
+    if "markdown_report_status" not in st.session_state:
+        st.session_state.markdown_report_status = "idle"
+    if "markdown_report_pending" not in st.session_state:
+        st.session_state.markdown_report_pending = False
+    if "markdown_report_last_dir" not in st.session_state:
+        st.session_state.markdown_report_last_dir = None
+    if "crawl_proc" not in st.session_state:
+        st.session_state.crawl_proc = None
+    if "crawl_query" not in st.session_state:
+        st.session_state.crawl_query = None
+    if "crawl_limit" not in st.session_state:
+        st.session_state.crawl_limit = None
+    if "crawl_before_dirs" not in st.session_state:
+        st.session_state.crawl_before_dirs = None
+    if "history_compacted" not in st.session_state:
+        st.session_state.history_compacted = False
 
     # Auto-discover latest output dir with result.json if not set
     if st.session_state.last_output_dir is None:
@@ -148,53 +167,6 @@ def process_local_file(file):
                 "size": file.size
             }
         )
-
-def run_pipeline():
-    """Run the full Webis pipeline"""
-    if not st.session_state.documents:
-        st.error("❌ No documents found. Please upload or crawl some data first.")
-        return
-    
-    # Update pipeline status
-    st.session_state.pipeline_status.update({
-        "fetch": "completed",
-        "clean": "in_progress",
-        "extract": "idle",
-        "progress": 30
-    })
-    
-    try:
-        # Initialize pipeline
-        pipeline = IntelligentPipeline()
-        context = PipelineContext(task="Process documents")
-        
-        # Run pipeline
-        result = pipeline.run(
-            query="Process uploaded documents",
-            requirements={
-                "min_count": len(st.session_state.documents),
-                "relevance_threshold": 0.7
-            },
-            context=context
-        )
-        
-        # Update session state
-        if result.get("documents"):
-            st.session_state.structured_result = result
-            st.session_state.pipeline_status.update({
-                "clean": "completed",
-                "extract": "completed",
-                "progress": 100
-            })
-            st.success("✅ Pipeline completed successfully!")
-            
-    except Exception as e:
-        st.error(f"❌ Pipeline failed: {str(e)}")
-        st.session_state.pipeline_status.update({
-            "clean": "failed",
-            "extract": "failed",
-            "progress": 0
-        })
 
 # ------------------------------
 # Branding Helpers
@@ -269,13 +241,219 @@ def _find_latest_output_dir(output_root: Path) -> Path | None:
         return None
     return max(dirs, key=lambda p: p.stat().st_mtime)
 
+def _append_query_history_record(
+    query: str,
+    limit: int,
+    output_dir: Path | None,
+    status: str,
+    error: str | None = None,
+) -> None:
+    """Append one query-output mapping record for visualizer crawl/run actions."""
+    try:
+        QUERY_HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        record = {
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "query": query,
+            "limit": limit,
+            "status": status,
+            "output_dir": str(output_dir.resolve()) if output_dir else None,
+        }
+        if error:
+            record["error"] = error
+        with QUERY_HISTORY_FILE.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception:
+        # History logging should never break the UI flow, but keep an explicit trace in terminal.
+        logger.exception("Failed to append query history record to %s", QUERY_HISTORY_FILE)
 
-def run_crawl_cli(query: str, limit: int) -> None:
+
+def _compact_query_history_file() -> None:
+    """Keep only final records in history file (completed/failed), dropping legacy started rows."""
+    try:
+        if not QUERY_HISTORY_FILE.exists():
+            return
+        kept_lines = []
+        with QUERY_HISTORY_FILE.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except Exception:
+                    continue
+                if record.get("status") in {"completed", "failed"}:
+                    kept_lines.append(json.dumps(record, ensure_ascii=False))
+        with QUERY_HISTORY_FILE.open("w", encoding="utf-8") as f:
+            for line in kept_lines:
+                f.write(line + "\n")
+    except Exception:
+        logger.exception("Failed to compact query history file: %s", QUERY_HISTORY_FILE)
+
+
+def _load_output_query_mapping() -> dict[str, str]:
+    """Load mapping from output folder name to query text from history file."""
+    mapping: dict[str, str] = {}
+    try:
+        if not QUERY_HISTORY_FILE.exists():
+            return mapping
+        with QUERY_HISTORY_FILE.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except Exception:
+                    continue
+                if record.get("status") != "completed":
+                    continue
+                output_dir = record.get("output_dir")
+                query = (record.get("query") or "").strip()
+                if not output_dir or not query:
+                    continue
+                folder_name = Path(output_dir).name
+                if folder_name:
+                    # Keep the latest seen mapping if duplicates exist.
+                    mapping[folder_name] = query
+    except Exception:
+        logger.exception("Failed to load output-query mapping from %s", QUERY_HISTORY_FILE)
+    return mapping
+
+
+def _query_for_output_folder(folder_name: str | None) -> str | None:
+    if not folder_name:
+        return None
+    mapping = _load_output_query_mapping()
+    query = (mapping.get(folder_name) or "").strip()
+    return query or None
+
+
+def _is_crawl_running() -> bool:
+    proc = st.session_state.get("crawl_proc")
+    return bool(proc and proc.poll() is None)
+
+
+def _request_rerun_for_session(session_id: str) -> bool:
+    """Request one rerun for a specific Streamlit session (internal API, best effort)."""
+    try:
+        from streamlit.runtime.runtime import Runtime
+
+        runtime = Runtime.instance()
+        session_info = runtime._session_mgr.get_session_info(session_id)
+        if not session_info:
+            return False
+        session_info.session.request_rerun(None)
+        return True
+    except Exception:
+        logger.exception("Failed to request rerun for session: %s", session_id)
+        return False
+
+
+def _attach_background_completion_rerun(proc: subprocess.Popen) -> None:
+    """When background process exits, trigger exactly one UI rerun."""
+    try:
+        from streamlit.runtime.scriptrunner import get_script_run_ctx
+        ctx = get_script_run_ctx()
+        session_id = ctx.session_id if ctx else None
+    except Exception:
+        session_id = None
+
+    if not session_id:
+        logger.warning("No Streamlit session id found; cannot auto-rerun on background completion.")
+        return
+
+    def _wait_and_rerun() -> None:
+        try:
+            proc.wait()
+            _request_rerun_for_session(session_id)
+        except Exception:
+            logger.exception("Background completion watcher failed.")
+
+    threading.Thread(target=_wait_and_rerun, daemon=True).start()
+
+
+def _finalize_background_crawl_if_finished() -> None:
+    """Poll background crawl process and finalize state/history when it exits."""
+    proc = st.session_state.get("crawl_proc")
+    if not proc:
+        return
+    try:
+        return_code = proc.poll()
+    except Exception:
+        # Stale process handle; treat as failed and clear state.
+        return_code = -1
+    if return_code is None:
+        return
+
+    query = st.session_state.get("crawl_query") or ""
+    limit = st.session_state.get("crawl_limit") or 0
+    output_root = Path(__file__).parent.parent.parent / "output"
+    before_names = set(st.session_state.get("crawl_before_dirs") or [])
+    after_dirs = [p for p in output_root.iterdir() if p.is_dir()] if output_root.exists() else []
+    new_dirs = [p for p in after_dirs if p.name not in before_names]
+    output_dir = max(new_dirs, key=lambda p: p.stat().st_mtime) if new_dirs else _find_latest_output_dir(output_root)
+
+    if return_code == 0:
+        if output_dir:
+            st.session_state.last_output_dir = str(output_dir)
+            st.session_state.selected_output_dir = output_dir.name
+            st.session_state.pending_select_dir = output_dir.name
+            _append_query_history_record(
+                query=query,
+                limit=limit,
+                output_dir=output_dir,
+                status="completed",
+            )
+        else:
+            _append_query_history_record(
+                query=query,
+                limit=limit,
+                output_dir=None,
+                status="failed",
+                error="no_output_directory_generated",
+            )
+        st.session_state.pipeline_status.update({
+            "fetch": "completed",
+            "clean": "completed",
+            "extract": "completed",
+            "progress": 100
+        })
+    else:
+        _append_query_history_record(
+            query=query,
+            limit=limit,
+            output_dir=None,
+            status="failed",
+            error=f"exit_code_{return_code}",
+        )
+        st.session_state.pipeline_status.update({
+            "fetch": "failed",
+            "clean": "failed",
+            "extract": "failed",
+            "progress": 0
+        })
+
+    st.session_state.crawl_proc = None
+    st.session_state.crawl_query = None
+    st.session_state.crawl_limit = None
+    st.session_state.crawl_before_dirs = None
+
+
+def run_crawl_cli(query: str, limit: int) -> bool:
     repo_root = Path(__file__).parent.parent.parent
     output_root = repo_root / "output"
-    cmd = [sys.executable, "-m", "webis.cli", "crawl", query, "--limit", str(limit)]
+
+    # Keep the UI label "Start Crawling", but execute the end-to-end run command in background.
+    cmd = [sys.executable, "-m", "webis.cli", "run", query, "--limit", str(limit)]
     env = os.environ.copy()
     env["PYTHONPATH"] = str(repo_root)
+    env["PYTHONUNBUFFERED"] = "1"
+    env["HF_ENDPOINT"] = "https://hf-mirror.com"
+    env["HF_HUB_DOWNLOAD_TIMEOUT"] = "120"
+
+    if st.session_state.get("crawl_proc") and st.session_state["crawl_proc"].poll() is None:
+        return False
 
     st.session_state.pipeline_status.update({
         "fetch": "in_progress",
@@ -283,52 +461,43 @@ def run_crawl_cli(query: str, limit: int) -> None:
         "extract": "idle",
         "progress": 10
     })
-
-    before = set(output_root.iterdir()) if output_root.exists() else set()
-
-    result = subprocess.run(
-        cmd,
-        cwd=repo_root,
-        env=env,
-        capture_output=True,
-        text=True
-    )
-
-    if result.returncode != 0:
+    st.session_state.crawl_before_dirs = [p.name for p in output_root.iterdir() if p.is_dir()] if output_root.exists() else []
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=repo_root,
+            env=env,
+            start_new_session=True,
+        )
+    except Exception as e:
+        _append_query_history_record(
+            query=query,
+            limit=limit,
+            output_dir=None,
+            status="failed",
+            error=str(e),
+        )
         st.session_state.pipeline_status.update({
             "fetch": "failed",
             "clean": "failed",
             "extract": "failed",
             "progress": 0
         })
-        return
+        st.session_state.crawl_before_dirs = None
+        return False
 
-    after = set(output_root.iterdir()) if output_root.exists() else set()
-    new_dirs = [p for p in (after - before) if p.is_dir()]
-    output_dir = max(new_dirs, key=lambda p: p.stat().st_mtime) if new_dirs else _find_latest_output_dir(output_root)
-
-    if not output_dir:
-        st.session_state.pipeline_status.update({
-            "fetch": "failed",
-            "clean": "failed",
-            "extract": "failed",
-            "progress": 0
-        })
-        return
-
-    st.session_state.last_output_dir = str(output_dir)
-    st.session_state.selected_output_dir = output_dir.name
-    st.session_state.pending_select_dir = output_dir.name
-    load_output_dir_state(st.session_state.selected_output_dir)
-
-    st.session_state.pipeline_status.update({
-        "fetch": "completed",
-        "clean": "completed",
-        "extract": "completed",
-        "progress": 100
-    })
+    st.session_state.crawl_proc = proc
+    st.session_state.crawl_query = query
+    st.session_state.crawl_limit = limit
+    print(f"[webis_visualizer] Started background crawl pid={proc.pid}: {' '.join(cmd)}", flush=True)
+    _attach_background_completion_rerun(proc)
+    return True
 
 def run_html_report_cli(target_dir: str | None) -> str | None:
+    if _is_crawl_running():
+        print("[webis_visualizer] Skip html-report: crawl task is still running.", flush=True)
+        return None
+
     repo_root = Path(__file__).parent.parent.parent
     output_root = repo_root / "output"
     if not output_root.exists():
@@ -353,8 +522,12 @@ def run_html_report_cli(target_dir: str | None) -> str | None:
 
     env = os.environ.copy()
     env["PYTHONPATH"] = str(repo_root)
-    result = subprocess.run(cmd, cwd=repo_root, env=env, capture_output=True, text=True)
+    env["HF_ENDPOINT"] = "https://hf-mirror.com"
+    env["HF_HUB_DOWNLOAD_TIMEOUT"] = "120"
+    print(f"[webis_visualizer] Running: {' '.join(cmd)}", flush=True)
+    result = subprocess.run(cmd, cwd=repo_root, env=env)
     if result.returncode != 0:
+        print(f"[webis_visualizer] html-report failed with exit code {result.returncode}", flush=True)
         return None
 
     report_path = output_dir / "report.html"
@@ -363,18 +536,70 @@ def run_html_report_cli(target_dir: str | None) -> str | None:
 
     return None
 
+
+def _find_latest_markdown_report(output_dir: Path) -> Path | None:
+    reports = sorted(output_dir.glob("report_*.md"), key=lambda p: p.stat().st_mtime, reverse=True)
+    return reports[0] if reports else None
+
+
+def run_markdown_report_cli(target_dir: str | None) -> tuple[str | None, Path | None]:
+    if _is_crawl_running():
+        print("[webis_visualizer] Skip markdown-report: crawl task is still running.", flush=True)
+        return None, None
+
+    repo_root = Path(__file__).parent.parent.parent
+    output_root = repo_root / "output"
+    if not output_root.exists() or not target_dir:
+        return None, None
+
+    output_dir = output_root / target_dir
+    rag_store_path = output_dir / "rag_store.json"
+    if not rag_store_path.exists():
+        return None, None
+
+    before_latest = _find_latest_markdown_report(output_dir)
+    query = _query_for_output_folder(target_dir)
+
+    cmd = [
+        sys.executable, "-m", "webis.cli", "markdown-report",
+        str(rag_store_path),
+    ]
+    if query:
+        cmd += ["--query", query]
+
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(repo_root)
+    env["HF_ENDPOINT"] = "https://hf-mirror.com"
+    env["HF_HUB_DOWNLOAD_TIMEOUT"] = "120"
+    print(f"[webis_visualizer] Running: {' '.join(cmd)}", flush=True)
+    result = subprocess.run(cmd, cwd=repo_root, env=env)
+    if result.returncode != 0:
+        print(f"[webis_visualizer] markdown-report failed with exit code {result.returncode}", flush=True)
+        return None, None
+
+    after_latest = _find_latest_markdown_report(output_dir)
+    if not after_latest:
+        return None, None
+
+    if before_latest and after_latest.resolve() == before_latest.resolve():
+        # No new report generated.
+        return None, None
+
+    return after_latest.read_text(encoding="utf-8"), after_latest
+
 def load_output_dir_state(selected_dir: str | None) -> None:
     repo_root = Path(__file__).parent.parent.parent
     output_root = repo_root / "output"
     if not selected_dir:
         st.session_state.documents = []
         st.session_state.structured_result = None
-        st.session_state.pipeline_status.update({
-            "fetch": "idle",
-            "clean": "idle",
-            "extract": "idle",
-            "progress": 0
-        })
+        if not _is_crawl_running():
+            st.session_state.pipeline_status.update({
+                "fetch": "idle",
+                "clean": "idle",
+                "extract": "idle",
+                "progress": 0
+            })
         return
 
     target_dir = output_root / selected_dir
@@ -391,25 +616,31 @@ def load_output_dir_state(selected_dir: str | None) -> None:
     if result_path.exists():
         with result_path.open("r", encoding="utf-8") as f:
             st.session_state.structured_result = json.load(f)
-        st.session_state.pipeline_status.update({
-            "fetch": "completed",
-            "clean": "completed",
-            "extract": "completed",
-            "progress": 100
-        })
+        if not _is_crawl_running():
+            st.session_state.pipeline_status.update({
+                "fetch": "completed",
+                "clean": "completed",
+                "extract": "completed",
+                "progress": 100
+            })
     else:
         st.session_state.structured_result = None
-        st.session_state.pipeline_status.update({
-            "fetch": "completed" if docs_path.exists() else "idle",
-            "clean": "idle",
-            "extract": "idle",
-            "progress": 30 if docs_path.exists() else 0
-        })
+        if not _is_crawl_running():
+            st.session_state.pipeline_status.update({
+                "fetch": "completed" if docs_path.exists() else "idle",
+                "clean": "idle",
+                "extract": "idle",
+                "progress": 30 if docs_path.exists() else 0
+            })
 
 # ------------------------------
 # Main App
 # ------------------------------
 init_session_state()
+if not st.session_state.history_compacted:
+    _compact_query_history_file()
+    st.session_state.history_compacted = True
+_finalize_background_crawl_if_finished()
 
 
 # Custom CSS
@@ -1059,6 +1290,7 @@ output_root = repo_root / "output"
 output_folders = []
 if output_root.exists():
     output_folders = sorted([p.name for p in output_root.iterdir() if p.is_dir()], reverse=True)
+output_query_map = _load_output_query_mapping()
 
 if output_folders:
     if st.session_state.selected_output_dir not in output_folders:
@@ -1077,6 +1309,7 @@ st.markdown("<div class=\"output-select-wrapper\">", unsafe_allow_html=True)
 selected = st.selectbox(
     "Output Folder",
     options=output_folders,
+    format_func=lambda folder: output_query_map.get(folder, folder),
     index=output_folders.index(st.session_state.output_folder_select) if st.session_state.output_folder_select else 0,
     key="output_folder_select",
     label_visibility="collapsed"
@@ -1091,10 +1324,14 @@ structured_json_class = "right-rail-item disabled"
 selected_dir = st.session_state.selected_output_dir
 result_path = None
 report_path = None
+rag_store_path = None
+markdown_report_path = None
 
 if selected_dir:
     result_path = output_root / selected_dir / "result.json"
     report_path = output_root / selected_dir / "report.html"
+    rag_store_path = output_root / selected_dir / "rag_store.json"
+    markdown_report_path = _find_latest_markdown_report(output_root / selected_dir)
 
 if result_path and result_path.exists():
     structured_json = result_path.read_text(encoding="utf-8")
@@ -1110,6 +1347,31 @@ if report_path and report_path.exists():
     html_report_content = report_path.read_text(encoding="utf-8")
     html_report_b64 = base64.b64encode(html_report_content.encode("utf-8")).decode("utf-8")
     html_report_download_link = f"data:text/html;charset=utf-8;base64,{html_report_b64}"
+
+markdown_report_download_link = ""
+if markdown_report_path and markdown_report_path.exists():
+    markdown_report_content = markdown_report_path.read_text(encoding="utf-8")
+    markdown_report_b64 = base64.b64encode(markdown_report_content.encode("utf-8")).decode("utf-8")
+    markdown_report_download_link = f"data:text/markdown;charset=utf-8;base64,{markdown_report_b64}"
+
+markdown_report_block = '<div class="right-rail-preview muted">No Markdown report yet</div>'
+is_active_markdown_dir = bool(selected_dir) and selected_dir == st.session_state.markdown_report_last_dir
+if st.session_state.markdown_report_status == "processing" and is_active_markdown_dir:
+    markdown_report_block = '<div class="right-rail-preview">Processing...</div>'
+elif markdown_report_path and markdown_report_path.exists():
+    markdown_report_block = textwrap.dedent(f"""
+        <div class="right-rail-preview-row">
+            <div class="right-rail-preview">Markdown Report Ready</div>
+            <a class="right-rail-download" href="{markdown_report_download_link}" download="{markdown_report_path.name}">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M12 3a1 1 0 0 1 1 1v8.59l2.3-2.3a1 1 0 1 1 1.4 1.42l-4.01 4a1 1 0 0 1-1.38 0l-4.01-4a1 1 0 1 1 1.4-1.42L11 12.59V4a1 1 0 0 1 1-1zm-7 14a1 1 0 0 1 1 1v1h12v-1a1 1 0 1 1 2 0v2a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-2a1 1 0 0 1 1-1z"/>
+                </svg>
+                <span>Download</span>
+            </a>
+        </div>
+    """).strip()
+elif st.session_state.markdown_report_status == "failed" and is_active_markdown_dir:
+    markdown_report_block = '<div class="right-rail-preview muted">Failed to generate Markdown report</div>'
 
 html_report_block = '<div class="right-rail-preview muted">No HTML report yet</div>'
 is_active_html_dir = bool(selected_dir) and selected_dir == st.session_state.html_report_last_dir
@@ -1130,11 +1392,26 @@ elif report_path and report_path.exists():
 elif st.session_state.html_report_status == "failed" and is_active_html_dir:
     html_report_block = '<div class="right-rail-preview muted">Failed to generate HTML report</div>'
 
-html_report_action_enabled = html_report_enabled and st.session_state.html_report_status != "processing"
+html_report_action_enabled = (
+    html_report_enabled
+    and st.session_state.html_report_status != "processing"
+    and not _is_crawl_running()
+)
 html_report_button_class = "right-rail-item right-rail-button"
 if not html_report_action_enabled:
     html_report_button_class += " disabled"
 html_report_button_disabled_attr = "disabled" if not html_report_action_enabled else ""
+
+markdown_report_enabled = bool(rag_store_path and rag_store_path.exists())
+markdown_report_action_enabled = (
+    markdown_report_enabled
+    and st.session_state.markdown_report_status != "processing"
+    and not _is_crawl_running()
+)
+markdown_report_button_class = "right-rail-item right-rail-button"
+if not markdown_report_action_enabled:
+    markdown_report_button_class += " disabled"
+markdown_report_button_disabled_attr = "disabled" if not markdown_report_action_enabled else ""
 
 st.markdown(
     textwrap.dedent(f"""
@@ -1149,7 +1426,7 @@ st.markdown(
                     </div>
                     <div>Structured JSON file</div>
                 </a>
-                <div class="right-rail-item disabled" aria-disabled="true">
+                <button class="{markdown_report_button_class}" id="markdown-report-trigger" type="button" {markdown_report_button_disabled_attr}>
                     <div class="right-rail-icon icon-md">
                         <svg viewBox="0 0 24 24" aria-hidden="true">
                             <path d="M5 4h8l6 6v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zm8 1.5V10h4.5L13 5.5zM7 12h6v2H7v-2zm0 4h8v2H7v-2z"/>
@@ -1157,7 +1434,7 @@ st.markdown(
                         </svg>
                     </div>
                     <div>Markdown report</div>
-                </div>
+                </button>
                 <button class="{html_report_button_class}" id="html-report-trigger" type="button" {html_report_button_disabled_attr}>
                     <div class="right-rail-icon icon-html">
                         <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -1168,10 +1445,18 @@ st.markdown(
                     <div>HTML report</div>
                 </button>
             </div>
+            {markdown_report_block}
             {html_report_block}
         </aside>
     """),
     unsafe_allow_html=True
+)
+
+markdown_report_clicked = st.button(
+    "Markdown report action",
+    key="markdown_report_action_hidden",
+    help="Markdown report action",
+    disabled=not markdown_report_action_enabled
 )
 
 html_report_clicked = st.button(
@@ -1185,26 +1470,32 @@ components.html(
     """
     <script>
     (function() {
-      const findHiddenButton = () => {
+      const findHiddenButton = (label) => {
         const buttons = Array.from(window.parent.document.querySelectorAll('button'));
-        return buttons.find((btn) => (btn.textContent || '').trim() === 'HTML report action');
+        return buttons.find((btn) => (btn.textContent || '').trim() === label);
       };
       const bind = () => {
-        const trigger = window.parent.document.getElementById('html-report-trigger');
-        const hidden = findHiddenButton();
-        if (hidden) {
-          const wrap = hidden.closest('[data-testid=\"stButton\"]') || hidden.parentElement;
-          if (wrap) wrap.style.display = 'none';
-        }
-        if (trigger && hidden && !trigger.dataset.bound) {
-          trigger.addEventListener('click', (event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            if (trigger.hasAttribute('disabled')) return;
-            hidden.click();
-          });
-          trigger.dataset.bound = '1';
-        }
+        const pairs = [
+          ['markdown-report-trigger', 'Markdown report action'],
+          ['html-report-trigger', 'HTML report action'],
+        ];
+        pairs.forEach(([triggerId, hiddenLabel]) => {
+          const trigger = window.parent.document.getElementById(triggerId);
+          const hidden = findHiddenButton(hiddenLabel);
+          if (hidden) {
+            const wrap = hidden.closest('[data-testid=\"stButton\"]') || hidden.parentElement;
+            if (wrap) wrap.style.display = 'none';
+          }
+          if (trigger && hidden && !trigger.dataset.bound) {
+            trigger.addEventListener('click', (event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              if (trigger.hasAttribute('disabled')) return;
+              hidden.click();
+            });
+            trigger.dataset.bound = '1';
+          }
+        });
       };
       const observer = new MutationObserver(bind);
       observer.observe(window.parent.document.body, { childList: true, subtree: true });
@@ -1223,6 +1514,12 @@ if html_report_clicked:
     st.session_state.html_report_pending = True
     st.rerun()
 
+if markdown_report_clicked:
+    st.session_state.markdown_report_status = "processing"
+    st.session_state.markdown_report_last_dir = st.session_state.selected_output_dir
+    st.session_state.markdown_report_pending = True
+    st.rerun()
+
 if (
     st.session_state.html_report_pending
     and st.session_state.html_report_status == "processing"
@@ -1236,6 +1533,19 @@ if (
         st.session_state.html_report_status = "failed"
     st.rerun()
 
+if (
+    st.session_state.markdown_report_pending
+    and st.session_state.markdown_report_status == "processing"
+    and st.session_state.selected_output_dir
+):
+    st.session_state.markdown_report_pending = False
+    markdown_output, _ = run_markdown_report_cli(st.session_state.selected_output_dir)
+    if markdown_output:
+        st.session_state.markdown_report_status = "ready"
+    else:
+        st.session_state.markdown_report_status = "failed"
+    st.rerun()
+
 # ------------------------------
 # Sidebar - Data Source Management
 # ------------------------------
@@ -1247,12 +1557,17 @@ limit = st.sidebar.slider("Number of Results", min_value=1, max_value=10, value=
 
 if st.sidebar.button("Start Crawling"):
     if query:
-        with st.sidebar:
-            with st.spinner("Processing..."):
-                run_crawl_cli(query, limit)
-        st.rerun()
+        started = run_crawl_cli(query, limit)
+        if started:
+            st.sidebar.success("✅ Started in background: webis run")
+            st.rerun()
+        else:
+            st.sidebar.warning("⚠️ A crawling task is already running. Please wait for it to finish.")
     else:
         st.error("❌ Please enter a search query")
+
+if _is_crawl_running():
+    st.sidebar.info(f"⏳ Running in background: {st.session_state.get('crawl_query')}")
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("Local Upload")

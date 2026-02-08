@@ -372,10 +372,11 @@ class ReportGenerationTask(RAGTask):
             
             # Overview
             markdown_lines.append("## Overview")
+            top_relevance = f"{max(scores):.3f}" if scores else "N/A"
             markdown_lines.append(
                 f"- **Documents Retrieved:** {metadata.get('retrieval_count', 0)}\n"
                 f"- **Webis Fetched:** {'Yes' if metadata.get('webis_fetched') else 'No'}\n"
-                f"- **Top Relevance Score:** {max(scores) if scores else 'N/A':.3f}"
+                f"- **Top Relevance Score:** {top_relevance}"
             )
             markdown_lines.append("")
             
@@ -393,14 +394,14 @@ class ReportGenerationTask(RAGTask):
             markdown_lines.append("")
             
             # Raw Data (optional)
-            # if self.include_raw_data:
-            #     markdown_lines.append("## Raw Data")
-            #     markdown_lines.append("")
-            #     markdown_lines.append("### Retrieved Context")
-            #     markdown_lines.append("```")
-            #     markdown_lines.append(context_text)
-            #     markdown_lines.append("```")
-            #     markdown_lines.append("")
+            if self.include_raw_data:
+                markdown_lines.append("## Raw Data")
+                markdown_lines.append("")
+                markdown_lines.append("### Retrieved Context")
+                markdown_lines.append("```")
+                markdown_lines.append(context_text)
+                markdown_lines.append("```")
+                markdown_lines.append("")
             
             # Metadata
             markdown_lines.append("## Metadata")

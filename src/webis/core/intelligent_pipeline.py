@@ -121,11 +121,22 @@ class IntelligentPipeline:
                 context=context,
                 excluded_tools=excluded_tools
             )
-            
-            # Track tools used in this iteration
+
+            # If exclusion strategy yields nothing, retry once in the same iteration
+            # without exclusions to avoid an empty round.
             tools_used_this_iteration = self.crawler_agent.last_used_tools
+            if not raw_docs and excluded_tools:
+                print("   No documents fetched with exclusions. Retrying once without exclusions...")
+                raw_docs = self.crawler_agent.run(
+                    task=query,
+                    limit=crawl_limit,
+                    context=context,
+                    excluded_tools=[]
+                )
+                tools_used_this_iteration = self.crawler_agent.last_used_tools
+
             print(f"   Tools used in this iteration: {tools_used_this_iteration}")
-            
+
             # Collect successful tools from the fetched documents
             successful_tools = set()
             for doc in raw_docs:
@@ -137,8 +148,8 @@ class IntelligentPipeline:
             else:
                 print(f"   Fetched {len(raw_docs)} raw documents from: {successful_tools}")
             
-            # Store tools used this iteration for next iteration's exclusion
-            state.used_tools_previous_iteration = tools_used_this_iteration
+            # Only exclude tools that actually returned documents, otherwise we risk empty rounds.
+            state.used_tools_previous_iteration = sorted(successful_tools)
             
             # Step 3: Clean documents
             print(f"🧹 Cleaning {len(raw_docs)} documents...")
