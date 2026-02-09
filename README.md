@@ -1,4 +1,6 @@
-# Webis: AI-Driven Knowledge Pipeline
+﻿# Webis: AI-Driven Knowledge Pipeline
+
+[中文](README.zh.md)
 
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-green)](LICENSE)
@@ -23,18 +25,21 @@
 ## ✨ Key Features
 
 ### For All Users
+
 - **🎯 5-Minute Setup**: Get started in minutes with our intuitive CLI and web interface
 - **📊 Beautiful Visualizations**: Interactive dashboard with charts and graphs
 - **🤖 AI Assistant**: Natural language interaction with your knowledge base
 - **📄 Multi-format Support**: PDFs, webpages, HTML, Markdown, CSV, JSON, DOCX
 
 ### For Developers
+
 - **🔌 Plugin Architecture**: Everything is a plugin (sources, processors, extractors)
 - **🛠️ SDK & API**: Clean Python API for integration into your applications
 - **🧪 Testing Suite**: Comprehensive test coverage with pytest
 - **📚 Rich Documentation**: Detailed API docs and examples
 
 ### For Power Users
+
 - **🤖 Intelligent Crawler**: LLM-powered source selection and query generation
 - **⚡ RAG-Ready**: Built-in cleaning, chunking, and embedding generation
 - **🔍 Advanced Search**: Vector search, keyword search, and hybrid retrieval
@@ -45,6 +50,7 @@
 ### Installation
 
 **Option 1: One-Command Setup (Recommended)**
+
 ```bash
 # Automatic setup with conda
 bash setup/conda_setup.sh
@@ -54,6 +60,7 @@ bash setup/uv_setup.sh
 ```
 
 **Option 2: Manual Installation**
+
 ```bash
 # Clone the repository
 git clone https://github.com/Narwhal-Lab/Webis.git
@@ -64,6 +71,7 @@ pip install -e .
 ```
 
 **Option 3: Docker**
+
 ```bash
 # Quick start with Docker
 docker-compose up
@@ -75,18 +83,21 @@ docker-compose -f docker-compose.prod.yml up -d
 ### First Run
 
 #### 1. Simple Web Data Collection
+
 ```bash
 # Get the latest news about AI
 webis run "Latest artificial intelligence news" --limit 5
 ```
 
 #### 2. Local Document Processing
+
 ```bash
 # Extract information from a PDF
 webis extract ./research.pdf --task "Extract key findings"
 ```
 
 #### 3. Launch Web Interface
+
 ```bash
 # Open the visualizer
 webis visualizer
@@ -105,6 +116,7 @@ webis visualizer
 ## 🛠️ Usage Examples
 
 ### Basic Web Scraping
+
 ```bash
 # Search and collect data from multiple sources
 webis run "Machine learning research papers" \
@@ -114,6 +126,7 @@ webis run "Machine learning research papers" \
 ```
 
 ### Building a Knowledge Base
+
 ```bash
 # Create a RAG knowledge base
 webis run "Recent developments in quantum computing" \
@@ -123,6 +136,7 @@ webis run "Recent developments in quantum computing" \
 ```
 
 ### Custom Data Processing
+
 ```bash
 # Process local files with custom schema
 webis extract ./financial_reports.pdf \
@@ -131,6 +145,7 @@ webis extract ./financial_reports.pdf \
 ```
 
 ### Batch Processing
+
 ```bash
 # Process multiple files
 webis batch process ./documents/ \
@@ -182,6 +197,7 @@ graph TB
 Webis is built around a powerful plugin architecture:
 
 ### Data Source Plugins
+
 - `duckduckgo` - DuckDuckGo Search
 - `semantic_scholar` - Academic papers
 - `github` - GitHub repositories
@@ -190,12 +206,14 @@ Webis is built around a powerful plugin architecture:
 - `hackernews` - Hacker News
 
 ### Processing Plugins
+
 - `html_cleaner` - HTML content cleaning
 - `pdf_processor` - PDF text extraction
 - `chunking` - Document chunking strategies
 - `ocr` - Image text extraction
 
 ### Extraction Plugins
+
 - `llm_extractor` - LLM-based data extraction
 - `pii_redactor` - PII removal
 - `sentiment_analysis` - Sentiment scoring

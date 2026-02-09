@@ -1,5 +1,7 @@
 # Webis: AI 驱动的知识管道
 
+[English](README.md)
+
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-green)](LICENSE)
 [![PyPI](https://img.shields.io/pypi/v/webis)](https://pypi.org/project/webis/)
@@ -23,18 +25,21 @@
 ## ✨ 主要功能
 
 ### 适用于所有用户
+
 - **🎯 5分钟快速上手**：通过直观的 CLI 和 Web 界面快速开始
 - **📊 美观的可视化**：带有图表和图形的交互式仪表板
 - **🤖 AI 助手**：与知识库的自然语言交互
 - **📄 多格式支持**：PDF、网页、HTML、Markdown、CSV、JSON、DOCX
 
 ### 适用于开发者
+
 - **🔌 插件架构**：一切都是插件（数据源、处理器、提取器）
 - **🛠️ SDK & API**：用于集成到应用程序的清晰 Python API
 - **🧪 测试套件**：使用 pytest 的全面测试覆盖
 - **📚 丰富的文档**：详细的 API 文档和示例
 
 ### 适用于高级用户
+
 - **🤖 智能爬虫**：基于 LLM 的源选择和查询生成
 - **⚡ RAG 就绪**：内置的清理、分块和嵌入生成
 - **🔍 高级搜索**：向量搜索、关键词搜索和混合检索
@@ -45,6 +50,7 @@
 ### 安装
 
 **选项 1：一键设置（推荐）**
+
 ```bash
 # 使用设置脚本
 bash setup/conda_setup.sh
@@ -54,6 +60,7 @@ bash setup/uv_setup.sh
 ```
 
 **选项 2：手动安装**
+
 ```bash
 # 克隆并安装
 git clone https://github.com/Narwhal-Lab/Webis.git
@@ -64,6 +71,7 @@ pip install -e .
 ```
 
 **选项 3：Docker**
+
 ```bash
 # 使用 Docker Compose 快速启动
 docker-compose up
@@ -75,18 +83,21 @@ docker-compose -f docker-compose.prod.yml up -d
 ### 首次运行
 
 #### 1. 简单网络数据收集
+
 ```bash
 # 获取最新的 AI 新闻
 webis run "最新的 AI 新闻" --limit 5
 ```
 
 #### 2. 本地文档处理
+
 ```bash
 # 从 PDF 中提取信息
 webis extract ./report.pdf --task "提取财务摘要"
 ```
 
 #### 3. 启动 Web 界面
+
 ```bash
 # 打开可视化器
 webis visualizer
@@ -105,6 +116,7 @@ webis visualizer
 ## 🛠️ 使用示例
 
 ### 基础网络爬取
+
 ```bash
 # 从多个来源搜索和收集数据
 webis run "机器学习研究论文" \
@@ -114,6 +126,7 @@ webis run "机器学习研究论文" \
 ```
 
 ### 构建知识库
+
 ```bash
 # 创建 RAG 知识库
 webis run "最近的量子计算发展" \
@@ -122,6 +135,7 @@ webis run "最近的量子计算发展" \
 ```
 
 ### 自定义数据处理
+
 ```bash
 # 使用自定义模式处理本地文件
 webis extract ./financial_reports.pdf \
@@ -130,6 +144,7 @@ webis extract ./financial_reports.pdf \
 ```
 
 ### 批量处理
+
 ```bash
 # 处理多个文件
 webis batch process ./documents/ \
@@ -181,6 +196,7 @@ graph TB
 Webis 建立在强大的插件架构之上：
 
 ### 数据源插件
+
 - `duckduckgo` - DuckDuckGo 搜索
 - `semantic_scholar` - 学术论文
 - `github` - GitHub 仓库
@@ -189,12 +205,14 @@ Webis 建立在强大的插件架构之上：
 - `hackernews` - Hacker News
 
 ### 处理插件
+
 - `html_cleaner` - HTML 内容清理
 - `pdf_processor` - PDF 文本提取
 - `chunking` - 文档分块策略
 - `ocr` - 图像文本提取
 
 ### 提取插件
+
 - `llm_extractor` - LLM 基础数据提取
 - `pii_redactor` - PII 移除
 - `sentiment_analysis` - 情感评分
