@@ -59,6 +59,7 @@ class ModelConfig:
     # API settings
     api_key_env: str = ""
     base_url: Optional[str] = None
+    base_url_env: Optional[str] = None
     
     # Model parameters
     temperature: float = 0.0
@@ -77,42 +78,32 @@ class ModelConfig:
 
 # Pre-configured models
 BUILTIN_MODELS: Dict[str, ModelConfig] = {
-    "deepseek-v3": ModelConfig(
-        name="deepseek-ai/DeepSeek-V3",
-        provider="siliconflow",
-        api_key_env="SILICONFLOW_API_KEY",
-        base_url="https://api.siliconflow.cn/v1",
-        cost_per_1m_input=0.27,
-        cost_per_1m_output=1.1,
-        context_window=64000,
-        supports_json_mode=True,
-    ),
     "deepseek-v3.2": ModelConfig(
-        name="DeepSeek-V3.2",
-        provider="openai", # Wendalog is OpenAI compatible
-        api_key_env="WENDALOG_API_KEY",
-        base_url="https://endpoint.wendalog.com", # Base URL, SDK appends /v1 typically but let's see if this provider needs exact
-        # For OpenAI client with custom base_url, typically it's https://host/v1 if the path isn't standard.
-        # User previously used https://endpoint.wendalog.com/chat/completions implied base might be just the host or host/v1.
-        # Let's assume user input `https://endpoint.wendalog.com` is the base.
-        cost_per_1m_input=0.1, # Estimating
-        cost_per_1m_output=0.1,
+        name="deepseek-chat",
+        provider="deepseek",
+        api_key_env="DEEPSEEK_API_KEY",
+        base_url_env="DEEPSEEK_BASE_URL",
+        base_url="https://api.deepseek.com",
+        cost_per_1m_input=0.14, # Official pricing (approx)
+        cost_per_1m_output=0.28, # Official pricing (approx)
         context_window=64000,
         supports_json_mode=True,
     ),
     "deepseek-r1": ModelConfig(
-        name="Pro/deepseek-ai/DeepSeek-R1",
-        provider="siliconflow",
-        api_key_env="SILICONFLOW_API_KEY",
-        base_url="https://api.siliconflow.cn/v1",
-        cost_per_1m_input=4.0,
-        cost_per_1m_output=16.0,
+        name="deepseek-reasoner",
+        provider="deepseek",
+        api_key_env="DEEPSEEK_API_KEY",
+        base_url_env="DEEPSEEK_BASE_URL",
+        base_url="https://api.deepseek.com",
+        cost_per_1m_input=0.55, # Official pricing
+        cost_per_1m_output=2.19, # Official pricing
         context_window=64000,
     ),
     "qwen-coder-32b": ModelConfig(
         name="Qwen/Qwen2.5-Coder-32B-Instruct",
         provider="siliconflow",
         api_key_env="SILICONFLOW_API_KEY",
+        base_url_env="SILICONFLOW_BASE_URL",
         base_url="https://api.siliconflow.cn/v1",
         cost_per_1m_input=1.26,
         cost_per_1m_output=1.26,
@@ -181,10 +172,16 @@ class OpenAICompatibleProvider(LLMProvider):
         api_key = os.getenv(model_config.api_key_env)
         if not api_key:
             raise ValueError(f"Missing API key: {model_config.api_key_env}")
+            
+        base_url = model_config.base_url
+        if model_config.base_url_env:
+            env_url = os.getenv(model_config.base_url_env)
+            if env_url:
+                base_url = env_url
         
         client = OpenAI(
             api_key=api_key,
-            base_url=model_config.base_url,
+            base_url=base_url,
         )
         
         start_time = time.time()
@@ -258,7 +255,7 @@ class LLMRouter:
     
     Example:
         >>> router = LLMRouter()
-        >>> router.add_model("deepseek-v3", primary=True)
+        >>> router.add_model("deepseek-v3.2", primary=True)
         >>> router.add_model("gpt-4o-mini", fallback=True)
         >>> response = router.chat([{"role": "user", "content": "Hello"}])
     """
@@ -291,7 +288,7 @@ class LLMRouter:
         Add a model to the router.
         
         Args:
-            model_name: Model identifier (e.g., "deepseek-v3")
+            model_name: Model identifier (e.g., "deepseek-v3.2")
             config: Model configuration (uses builtin if not provided)
             primary: Set as primary model
             fallback: Add to fallback chain
@@ -406,6 +403,7 @@ def get_default_router() -> LLMRouter:
                 provider="openai",
                 api_key_env="CUSTOM_API_KEY",
                 base_url=os.environ.get("CUSTOM_BASE_URL"),
+                base_url_env="CUSTOM_BASE_URL",
                 cost_per_1m_input=0.1,
                 cost_per_1m_output=0.1,
                 context_window=100000,
@@ -415,10 +413,9 @@ def get_default_router() -> LLMRouter:
             _default_router.add_model(custom_name, config=custom_config, primary=True)
             logger.info(f"Using Custom LLM: {custom_name}")
         else:
-            # Default to DeepSeek-V3.2 (Wendalog)
+            # Default to DeepSeek-V3 (Official)
             _default_router.add_model("deepseek-v3.2", primary=True)
             
-        _default_router.add_model("deepseek-v3", fallback=True)
         _default_router.add_model("gpt-4o-mini", fallback=True)
             
     return _default_router

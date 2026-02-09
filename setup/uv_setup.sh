@@ -32,20 +32,29 @@ echo ""
 echo "Installing dependencies from requirements.txt (includes visualizer + brightdata-sdk)..."
 cd "$PROJECT_ROOT"
 if [ -n "$VIRTUAL_ENV" ]; then
-    # If venv is activated, use regular pip
-    pip install --upgrade pip
-    pip install -r setup/requirements.txt
+    # If venv is activated, use uv pip
+    uv pip install --upgrade pip
+    uv pip install -r setup/requirements.txt
 else
-    # If venv is not activated, activate it first or use uv pip with venv path
-    VENV_PYTHON="$PROJECT_ROOT/webis/bin/python"
-    if [ -f "$VENV_PYTHON" ]; then
-        echo "Installing to virtual environment: $PROJECT_ROOT/webis"
-        "$VENV_PYTHON" -m pip install --upgrade pip
-        "$VENV_PYTHON" -m pip install -r setup/requirements.txt
+    # If venv is not activated, use uv pip with venv path
+    VENV_PATH="$PROJECT_ROOT/webis"
+    if [ -d "$VENV_PATH" ]; then
+        echo "Installing to virtual environment: $VENV_PATH"
+        uv pip install --upgrade pip --python "$VENV_PATH/bin/python"
+        uv pip install -r setup/requirements.txt --python "$VENV_PATH/bin/python"
     else
         echo "Error: Virtual environment not found. Please run this script again after creating the venv."
         exit 1
     fi
+fi
+
+# Install the webis package in editable mode
+echo ""
+echo "Installing webis package..."
+if [ -n "$VIRTUAL_ENV" ]; then
+    uv pip install -e "$PROJECT_ROOT"
+else
+    uv pip install -e "$PROJECT_ROOT" --python "$PROJECT_ROOT/webis/bin/python"
 fi
 
 echo ""
@@ -56,5 +65,8 @@ if [ -z "$VIRTUAL_ENV" ]; then
     echo "  source webis/bin/activate"
     echo ""
 fi
-echo "To test the installation:"
-echo "  python tools/examples/demo.py"
+echo "To verify the installation:"
+echo "  webis --help"
+echo ""
+echo "To run the visualizer:"
+echo "  webis visualizer"

@@ -1,0 +1,24 @@
+# Contributors to Webis
+
+This file lists the contributors to the Webis project.
+
+## Core Team
+
+- Webis Team <contact@webis.dev>
+
+## Notable Contributors
+
+(Add contributors here as they make significant contributions)
+
+## How to Add Yourself
+
+To add yourself to this list:
+
+1. Make a meaningful contribution (code, docs, tests, etc.)
+2. Open a pull request
+3. In your PR, add your name and email to this file
+
+Format:
+```
+- Name <email@example.com> - Description of contribution
+```

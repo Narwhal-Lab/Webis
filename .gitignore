@@ -22,6 +22,9 @@ wheels/
 .installed.cfg
 *.egg
 legacy_v1/
+mypy_cache/
+.ruff_cache/
+.pytest_cache/
 
 # Webis Output
 output/
@@ -29,15 +32,59 @@ pipeline_outputs/
 crawled_data/
 *.db
 *.log
+logs/
+*.sqlite
 
-# Environment
+# Vector Store
+chroma_db/
+faiss_index/
+pinecone/
+
+# Environment and Secrets
 .env
+.env.*
 .venv
 venv/
 ENV/
+*.pem
+*.key
+secrets/
+credentials/
 
 # IDE
 .idea/
 .vscode/
 *.swp
 *.swo
+*.swn
+.DS_Store
+
+# Testing
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.tox/
+.hypothesis/
+
+# Documentation
+docs/_build/
+docs/.doctrees/
+site/
+
+# Packaging
+*.whl
+*.tar.gz
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# Local Dev
+.claude/
+src/webis_visualizer/query_output_history.jsonl

@@ -1,7 +1,7 @@
 # Webis：AI 驱动的数据管道
 
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/)
-[![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
+[![License](https://img.shields.io/badge/License-Apache%202.0-green)](LICENSE)
 
 **Webis** 是一个模块化、插件化的框架，旨在为下一代 AI 应用提供动力。它通过稳健的采集、处理与抽取流水线，将多样数据源（Web、SaaS、数据库等）连接到大语言模型（LLM）。
 
@@ -29,7 +29,7 @@ bash setup/conda_setup.sh
 bash setup/uv_setup.sh
 ```
 
-### 安装Webis CLI：
+### 安装Webis CLI
 
 ```bash
 pip install -e .

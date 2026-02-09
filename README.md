@@ -1,137 +1,257 @@
-# Webis: AI-Driven Data Pipeline
+# Webis: AI-Driven Knowledge Pipeline
 
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/)
-[![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
+[![License](https://img.shields.io/badge/License-Apache%202.0-green)](LICENSE)
+[![PyPI](https://img.shields.io/pypi/v/webis)](https://pypi.org/project/webis/)
+[![Documentation](https://img.shields.io/badge/docs-docs-green)](https://narwhal-lab.github.io/webis)
+[![Tests](https://img.shields.io/github/actions/workflow/status/Narwhal-Lab/Webis/ci.yml?branch=main&label=tests)](https://github.com/Narwhal-Lab/Webis/actions)
+[![Coverage](https://img.shields.io/codecov/c/github/Narwhal-Lab/Webis)](https://codecov.io/gh/Narwhal-Lab/Webis)
+[![Code Style](https://img.shields.io/badge/code%20style-ruff-blue)](https://github.com/astral-sh/ruff)
 
-**Webis** is a modular, plugin-based framework designed to power the next generation of AI applications. Through a robust pipeline of collection, processing, and extraction, it connects diverse data sources (Web, SaaS, databases, etc.) to Large Language Models (LLMs).
+**Webis** is a comprehensive, modular framework that powers the next generation of AI applications. It connects diverse data sources (Web, SaaS, databases, etc.) to Large Language Models (LLMs) through a robust pipeline of collection, processing, and extraction.
 
-## 🚀 Key Features
+## 🎯 Who is Webis for?
 
-* **Plugin-First Architecture**: Everything is a plugin (Source, Processor, Extractor, Model).
-* **Intelligent Crawler Agent**: Uses LLMs to dynamically select the best data sources and generate queries.
-* **RAG-Ready**: Built-in cleaning, chunking, and RAG preparation capabilities.
-* **LLM Extraction**: Turn unstructured PDFs/webpages into structured JSON (supports dynamic schemas).
-* **Unified CLI**: Use a single `webis` command to complete all operations.
+| 👥 **User Type** | 🚀 **Use Case** |
+|---|---|
+| **Researchers** | Literature reviews, data collection, research analysis |
+| **Data Scientists** | Training data preparation, knowledge base building |
+| **Developers** | Building AI applications, integrating RAG capabilities |
+| **Business Users** | Market monitoring, competitive intelligence, knowledge management |
+| **Educators** | Creating educational resources, research datasets |
 
-## 📦 Installation
+## ✨ Key Features
 
-### From the project root, use one of the following one-command setup scripts:
+### For All Users
+- **🎯 5-Minute Setup**: Get started in minutes with our intuitive CLI and web interface
+- **📊 Beautiful Visualizations**: Interactive dashboard with charts and graphs
+- **🤖 AI Assistant**: Natural language interaction with your knowledge base
+- **📄 Multi-format Support**: PDFs, webpages, HTML, Markdown, CSV, JSON, DOCX
 
-#### Option 1: Conda setup
+### For Developers
+- **🔌 Plugin Architecture**: Everything is a plugin (sources, processors, extractors)
+- **🛠️ SDK & API**: Clean Python API for integration into your applications
+- **🧪 Testing Suite**: Comprehensive test coverage with pytest
+- **📚 Rich Documentation**: Detailed API docs and examples
 
+### For Power Users
+- **🤖 Intelligent Crawler**: LLM-powered source selection and query generation
+- **⚡ RAG-Ready**: Built-in cleaning, chunking, and embedding generation
+- **🔍 Advanced Search**: Vector search, keyword search, and hybrid retrieval
+- **📈 Monitoring**: Real-time pipeline tracking and performance metrics
+
+## 🚀 Quick Start
+
+### Installation
+
+**Option 1: One-Command Setup (Recommended)**
 ```bash
+# Automatic setup with conda
 bash setup/conda_setup.sh
-```
 
-#### Option 2: uv setup
-
-```bash
+# Or with uv
 bash setup/uv_setup.sh
 ```
 
-### Install Webis CLI：
-
+**Option 2: Manual Installation**
 ```bash
+# Clone the repository
+git clone https://github.com/Narwhal-Lab/Webis.git
+cd webis
+
+# Install the package
 pip install -e .
 ```
 
-### Download embedding model for RAG knowledge base
-
-`sentence-transformers/all-MiniLM-L6-v2` is used to generate text embeddings when building the RAG knowledge base.
-
+**Option 3: Docker**
 ```bash
-# Optional mirror for mainland China
-export HF_ENDPOINT=https://hf-mirror.com
-export HF_HUB_DOWNLOAD_TIMEOUT=120
+# Quick start with Docker
+docker-compose up
 
-hf download sentence-transformers/all-MiniLM-L6-v2
+# For production
+docker-compose -f docker-compose.prod.yml up -d
 ```
 
-## 🛠️ Usage
+### First Run
 
-Webis primarily runs via the `webis` CLI.
-
-### 1. End-to-End Run
-
-Execute the full pipeline: identify data sources -> crawl -> clean -> extract -> build RAG knowledge base.
-
+#### 1. Simple Web Data Collection
 ```bash
-# Example: Find news about Peking University in the last three months and build a RAG knowledge base
-webis run "Find news about Peking University in the last three months" --limit 3
+# Get the latest news about AI
+webis run "Latest artificial intelligence news" --limit 5
 ```
 
-* `result.json`: Structured extraction results.
-* `documents.json`: **Raw and cleaned content** of all crawled documents (saved even if extraction fails).
-* `rag_store.json`: RAG knowledge base built from `documents.json`.
-
-## ⚠️ Configuration
-
-You must configure API keys in `.env` for Agent features to work.
-
-### 2. Extract Only
-
-Use LLMs to extract structured data from local files.
-
+#### 2. Local Document Processing
 ```bash
-# Extract from a PDF
-webis extract ./report.pdf --task "Extract financial summary"
-
-# Extract with a specific schema
-webis extract ./cv.pdf --schema ./schemas/resume.json
+# Extract information from a PDF
+webis extract ./research.pdf --task "Extract key findings"
 ```
 
-### 3. Generate HTML Report
-
-Generate `report.html` from an existing `result.json` (optional `documents.json`).
-
+#### 3. Launch Web Interface
 ```bash
-webis html-report ./output/20260204_113243/result.json --documents ./output/20260204_113243/documents.json
-```
-
-By default, output is written to the directory containing `result.json`.
-
-### 4. Generate Markdown Report from RAG Store
-
-Generate a markdown report directly from an existing `rag_store.json`.
-
-```bash
-webis markdown-report ./output/20260208_105119/rag_store.json
-```
-
-Optional: add a report focus query.
-
-```bash
-webis markdown-report ./output/20260208_105119/rag_store.json --query "Recent trends about Peking University news"
-```
-
-The generated markdown report is saved in the same directory as `rag_store.json`.
-
-## 🖥️ Visualizer
-
-### 1. Launch the Visualizer
-
-```bash
+# Open the visualizer
 webis visualizer
 ```
 
-### 2. Basic Flow
+## 📚 Getting Started Guides
 
-* Add data sources in the left sidebar (web crawling or local upload).
-* Run the pipeline and wait for completion.
-* Review structured JSON and statistics in the UI.
-* Use the AI assistant tab for analysis with source context.
+| Guide | Description | Target Audience |
+|---|---|---|
+| [Quick Start Guide](docs/quickstart.md) | 5 minutes to first result | All users |
+| [User Guide](docs/user-guide.md) | Complete feature walkthrough | Regular users |
+| [API Reference](docs/api.md) | Full API documentation | Developers |
+| [Plugin Development](docs/plugins.md) | Create custom plugins | Advanced users |
+| [Deployment Guide](docs/deployment.md) | Production deployment | System admins |
 
-## 🧩 Architecture
+## 🛠️ Usage Examples
 
-The project structure is under `src/webis/`:
+### Basic Web Scraping
+```bash
+# Search and collect data from multiple sources
+webis run "Machine learning research papers" \
+  --sources semantic_scholar,arxiv \
+  --limit 10 \
+  --output ml_papers
+```
 
-* **`core/`**: Core (Agents, Pipeline, Plugin Registry).
-* **`plugins/`**:
-  * `sources/`: GNews, Google Search, GitHub, etc.
-  * `processors/`: PDF parsing, HTML cleaning, etc.
-  * `extractors/`: LLMExtractor.
-* **`plugin_sdk/`**: Developer-friendly interface for building new plugins.
+### Building a Knowledge Base
+```bash
+# Create a RAG knowledge base
+webis run "Recent developments in quantum computing" \
+  --rag-mode \
+  --chunk-size 1000 \
+  --embed-model all-MiniLM-L6-v2
+```
 
-## 🤝 Contributing
+### Custom Data Processing
+```bash
+# Process local files with custom schema
+webis extract ./financial_reports.pdf \
+  --schema ./schemas/financial_report.json \
+  --output structured_data.json
+```
 
-We welcome contributions! To build new plugins with the SDK, see [CONTRIBUTING.md](CONTRIBUTING.md).
+### Batch Processing
+```bash
+# Process multiple files
+webis batch process ./documents/ \
+  --task "Extract entities" \
+  --output ./processed/
+```
+
+## 🏗️ Architecture
+
+```mermaid
+graph TB
+  subgraph "Data Sources"
+    A[Web Sources<br/>GNews, GitHub, Stack Overflow]
+    B[Local Files<br/>PDF, HTML, DOCX]
+    C[APIs<br/>RSS, Twitter, Slack]
+  end
+
+  subgraph "Pipeline Processing"
+    D[Intelligent Selection<br/>LLM-based source choice]
+    E[Content Processing<br/>Clean, Normalize]
+    F[Extraction<br/>LLM-based structuring]
+    G[RAG Preparation<br/>Chunk, Embed]
+  end
+
+  subgraph "Output & Storage"
+    H[Structured Data<br/>JSON, CSV]
+    I[Vector Store<br/>ChromaDB, FAISS]
+    J[Knowledge Base<br/>RAG-ready]
+  end
+
+  K[User Interface] --> A
+  K[User Interface] --> B
+  A --> D
+  B --> D
+  C --> D
+  D --> E
+  E --> F
+  F --> G
+  G --> H
+  G --> I
+  G --> J
+  H --> K
+  I --> K
+  J --> K
+```
+
+## 🔌 Plugin System
+
+Webis is built around a powerful plugin architecture:
+
+### Data Source Plugins
+- `duckduckgo` - DuckDuckGo Search
+- `semantic_scholar` - Academic papers
+- `github` - GitHub repositories
+- `gnews` - Google News
+- `reddit` - Reddit discussions
+- `hackernews` - Hacker News
+
+### Processing Plugins
+- `html_cleaner` - HTML content cleaning
+- `pdf_processor` - PDF text extraction
+- `chunking` - Document chunking strategies
+- `ocr` - Image text extraction
+
+### Extraction Plugins
+- `llm_extractor` - LLM-based data extraction
+- `pii_redactor` - PII removal
+- `sentiment_analysis` - Sentiment scoring
+
+## 📖 Documentation
+
+- 📖 [User Documentation](docs/)
+- 🔌 [Plugin Development Guide](docs/plugins.md)
+- 🏗️ [API Reference](docs/api.md)
+- 🚀 [Deployment Guide](docs/deployment.md)
+- 🤝 [Contributing Guide](CONTRIBUTING.md)
+
+## 🧪 Examples
+
+Explore our [examples](examples/) directory:
+
+- [Basic Web Scraping](examples/basic/web_scraping.py)
+- [Custom Plugin Development](examples/developer/custom_plugin.py)
+- [Enterprise Knowledge Base](examples/enterprise/knowledge_base.py)
+- [API Integration](examples/developer/api_client.py)
+
+## 🤝 Community & Support
+
+- 📚 [Documentation](https://narwhal-lab.github.io/webis)
+- 🐛 [Bug Reports](https://github.com/Narwhal-Lab/Webis/issues)
+- 💬 [Discussions](https://github.com/Narwhal-Lab/Webis/discussions)
+- 💬 [Discord Chat](https://discord.gg/webis)
+- 📧 [Email Support](mailto:contact@webis.dev)
+
+## 📝 Roadmap
+
+- [ ] v2.0.0 - Stable Release
+  - [ ] Enterprise features
+  - [ ] Advanced caching
+  - [ ] Multi-tenant support
+  - [ ] Enhanced security
+- [ ] v2.1.0 - Enhanced AI
+  - [ ] Multi-modal support
+  - [ ] Agent capabilities
+  - [ ] Auto-scaling
+- [ ] v2.2.0 - Ecosystem
+  - [ ] Marketplace for plugins
+  - [ ] Integration SDKs
+  - [ ] Monitoring dashboard
+
+## 📜 License
+
+This project is licensed under the **Apache 2.0 License** - see the [LICENSE](LICENSE) file for details.
+
+## 🌟 Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=Narwhal-Lab/Webis&type=Date)](https://star-history.com/#Narwhal-Lab/Webis&Date)
+
+---
+
+<div align="center">
+Made with ❤️ by the Webis Team<br>
+🌐 [website](https://webis.dev) | 📧 [contact](mailto:contact@webis.dev)
+</div>

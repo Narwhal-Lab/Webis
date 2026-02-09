@@ -12,10 +12,16 @@ license = {text = "Apache-2.0"}
 authors = [
     {name = "Webis Team", email = "contact@webis.dev"}
 ]
+maintainers = [
+    {name = "Webis Team", email = "contact@webis.dev"}
+]
+keywords = ["AI", "RAG", "knowledge-pipeline", "web-scraping", "LLM", "data-processing", "machine-learning"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
+    "Intended Audience :: Education",
+    "Intended Audience :: Business",
     "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.9",
@@ -23,6 +29,11 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Internet :: WWW/HTTP :: Dynamic Content",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+    "Topic :: Office/Business :: News/Diary",
+    "Topic :: Text Processing :: Markup :: HTML",
+    "Topic :: Utilities",
 ]
 dependencies = [
     "pydantic>=2.0.0",
@@ -61,6 +72,12 @@ dependencies = [
     "transformers>=4.30.0",
     "numpy>=1.20.0",
 ]
+
+[project.urls]
+"Bug Reports" = "https://github.com/Narwhal-Lab/Webis/issues"
+"Source" = "https://github.com/Narwhal-Lab/Webis"
+"Documentation" = "https://narwhal-lab.github.io/webis"
+"Changelog" = "https://github.com/Narwhal-Lab/Webis/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 dev = [

@@ -341,35 +341,63 @@ def _strip_wrapping_quotes(value: str) -> str:
     return s
 
 
-def _load_key_catalog_from_env_example(template_path: Path) -> dict[str, list[str]]:
-    llm_keys: list[str] = []
-    data_source_keys: list[str] = []
-    current_section = None
-
-    if not template_path.exists():
-        return {"llm": llm_keys, "data_source": data_source_keys}
-
-    for raw_line in template_path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if "LLM Providers" in line:
-            current_section = "llm"
-            continue
-        if "Data Sources" in line:
-            current_section = "data_source"
-            continue
-        if not line or line.startswith("#") or "=" not in raw_line:
+def _load_key_catalog(paths: list[Path]) -> dict[str, list[str]]:
+    """
+    Load key catalog from the first valid source file provided.
+    Tries paths in order (e.g., [.env, .env.example]).
+    """
+    for path in paths:
+        if not path.exists():
             continue
 
-        key = raw_line.split("=", 1)[0].strip()
-        if not key:
+        llm_keys: list[str] = []
+        data_source_keys: list[str] = []
+        current_section = None
+        has_valid_sections = False
+
+        try:
+            content = path.read_text(encoding="utf-8")
+            
+            # Flexible check for section headers
+            has_llm_header = "LLM Provider" in content or "LLM Providers" in content
+            has_data_header = "Data Source" in content or "Search/Scraping" in content or "Search API" in content
+            
+            if not has_llm_header and not has_data_header:
+                continue
+
+            for raw_line in content.splitlines():
+                line = raw_line.strip()
+                # Check for LLM section headers
+                if "LLM Provider" in line or "LLM Providers" in line:
+                    current_section = "llm"
+                    has_valid_sections = True
+                    continue
+                # Check for Data/Search section headers
+                if "Data Source" in line or "Search/Scraping" in line or "Search API" in line:
+                    current_section = "data_source"
+                    has_valid_sections = True
+                    continue
+
+                if not line or line.startswith("#") or "=" not in raw_line:
+                    continue
+
+                key = raw_line.split("=", 1)[0].strip()
+                if not key:
+                    continue
+
+                if current_section == "llm":
+                    llm_keys.append(key)
+                elif current_section == "data_source":
+                    data_source_keys.append(key)
+            
+            if has_valid_sections:
+                return {"llm": llm_keys, "data_source": data_source_keys}
+                
+        except Exception:
+            logger.exception(f"Failed to parse key catalog from {path}")
             continue
 
-        if current_section == "llm":
-            llm_keys.append(key)
-        elif current_section == "data_source":
-            data_source_keys.append(key)
-
-    return {"llm": llm_keys, "data_source": data_source_keys}
+    return {"llm": [], "data_source": []}
 
 
 def _load_env_values(env_path: Path, managed_keys: list[str]) -> dict[str, str]:
@@ -432,13 +460,14 @@ def _load_effective_env_values(env_path: Path, template_path: Path, managed_keys
 @st.dialog("Configure API Keys")
 def _show_key_config_dialog() -> None:
     env_path, template_path = _get_env_paths()
-    catalog = _load_key_catalog_from_env_example(template_path)
+    # Prioritize loading catalog from .env itself if structured, fallback to example
+    catalog = _load_key_catalog([env_path, template_path])
     llm_keys = catalog.get("llm", [])
     data_source_keys = catalog.get("data_source", [])
     managed_keys = llm_keys + data_source_keys
 
     if not managed_keys:
-        st.error("Unable to load key catalog from .env.example")
+        st.error("Unable to load key catalog from .env or .env.example")
         return
 
     current_values = _load_effective_env_values(env_path, template_path, managed_keys)
