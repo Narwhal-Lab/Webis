@@ -24,6 +24,35 @@ from typing import Any, Dict, List, Optional, Union
 logger = logging.getLogger(__name__)
 
 
+def _has_real_env_value(env_name: str) -> bool:
+    """Return True if env var exists and does not look like a placeholder."""
+    value = os.environ.get(env_name, "").strip()
+    if not value:
+        return False
+
+    lowered = value.lower()
+    placeholder_values = {
+        "your-openai-api-key-here",
+        "your-anthropic-api-key-here",
+        "your-deepseek-api-key-here",
+        "your-serpapi-key-here",
+        "your-exa-api-key-here",
+        "your-firecrawl-api-key-here",
+        "your-secret-key-here-change-this-in-production",
+        "your-encryption-key-here",
+    }
+    if lowered in placeholder_values:
+        return False
+
+    # Common placeholder patterns found in env examples.
+    if lowered.startswith("sk-your-"):
+        return False
+    if lowered.startswith("your-") and lowered.endswith("-here"):
+        return False
+
+    return True
+
+
 @dataclass
 class LLMResponse:
     """Response from an LLM call."""
@@ -395,7 +424,7 @@ def get_default_router() -> LLMRouter:
     if _default_router is None:
         _default_router = LLMRouter()
         
-        if os.environ.get("CUSTOM_API_KEY"):
+        if _has_real_env_value("CUSTOM_API_KEY"):
             # Add custom model dynamically
             custom_name = os.environ.get("CUSTOM_MODEL_NAME", "custom-model")
             custom_config = ModelConfig(
@@ -413,10 +442,37 @@ def get_default_router() -> LLMRouter:
             _default_router.add_model(custom_name, config=custom_config, primary=True)
             logger.info(f"Using Custom LLM: {custom_name}")
         else:
-            # Default to DeepSeek-V3 (Official)
-            _default_router.add_model("deepseek-v3.2", primary=True)
-            
-        _default_router.add_model("gpt-4o-mini", fallback=True)
+            # Auto-select providers by available non-placeholder API keys.
+            # Priority: SiliconFlow -> DeepSeek -> OpenAI -> Anthropic
+            candidate_order = [
+                "qwen-coder-32b",
+                "deepseek-v3.2",
+                "gpt-4o-mini",
+                "claude-sonnet",
+            ]
+            available_models = [
+                model_name
+                for model_name in candidate_order
+                if _has_real_env_value(BUILTIN_MODELS[model_name].api_key_env)
+            ]
+
+            if available_models:
+                _default_router.add_model(available_models[0], primary=True)
+                for fallback_model in available_models[1:]:
+                    _default_router.add_model(fallback_model, fallback=True)
+                logger.info(
+                    "Auto-selected LLM chain: primary=%s, fallbacks=%s",
+                    available_models[0],
+                    available_models[1:],
+                )
+            else:
+                # Keep backward-compatible defaults when no valid key is found.
+                _default_router.add_model("deepseek-v3.2", primary=True)
+                _default_router.add_model("gpt-4o-mini", fallback=True)
+                logger.warning(
+                    "No valid LLM API keys detected. Using legacy default chain: "
+                    "deepseek-v3.2 -> gpt-4o-mini"
+                )
             
     return _default_router
 

@@ -48,13 +48,13 @@ else
     fi
 fi
 
-# Install the webis package in editable mode
+# Install the local package so the `webis` CLI entry point is available.
 echo ""
-echo "Installing webis package..."
+echo "Installing webis package in editable mode..."
 if [ -n "$VIRTUAL_ENV" ]; then
-    uv pip install -e "$PROJECT_ROOT"
+    uv pip install -e "$PROJECT_ROOT" --no-deps
 else
-    uv pip install -e "$PROJECT_ROOT" --python "$PROJECT_ROOT/webis/bin/python"
+    uv pip install -e "$PROJECT_ROOT" --no-deps --python "$PROJECT_ROOT/webis/bin/python"
 fi
 
 echo ""
