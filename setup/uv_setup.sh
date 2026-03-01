@@ -52,9 +52,9 @@ fi
 echo ""
 echo "Installing webis package in editable mode..."
 if [ -n "$VIRTUAL_ENV" ]; then
-    uv pip install -e "$PROJECT_ROOT" --no-deps
+    uv pip install -e "$PROJECT_ROOT"
 else
-    uv pip install -e "$PROJECT_ROOT" --no-deps --python "$PROJECT_ROOT/webis/bin/python"
+    uv pip install -e "$PROJECT_ROOT" --python "$PROJECT_ROOT/webis/bin/python"
 fi
 
 echo ""

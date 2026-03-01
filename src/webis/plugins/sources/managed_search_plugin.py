@@ -7,13 +7,49 @@ This module contains search plugins that rely on managed third-party APIs
 
 import logging
 import os
+import ssl
+import time
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from typing import Iterator, Optional, Dict, Any, List
 
 from webis.core.plugin import SourcePlugin
 from webis.core.schema import WebisDocument, DocumentType, DocumentMetadata, PipelineContext
 
 logger = logging.getLogger(__name__)
+
+
+class _TLSAdapter(HTTPAdapter):
+    """HTTPS adapter that uses a permissive SSL context to work around
+    SSLEOFError in restricted network environments (proxies, firewalls)."""
+
+    def __init__(self, **kwargs):
+        self._ssl_context = ssl.create_default_context()
+        # Allow TLS 1.2+ and relax cipher requirements
+        self._ssl_context.set_ciphers("DEFAULT:@SECLEVEL=1")
+        self._ssl_context.check_hostname = False
+        self._ssl_context.verify_mode = ssl.CERT_NONE
+        super().__init__(**kwargs)
+
+    def init_poolmanager(self, *args, **kwargs):
+        kwargs["ssl_context"] = self._ssl_context
+        return super().init_poolmanager(*args, **kwargs)
+
+
+def _resilient_session(max_retries: int = 3) -> requests.Session:
+    """Build a requests Session with automatic retries and TLS fallback."""
+    session = requests.Session()
+    session.trust_env = False
+    retry = Retry(
+        total=max_retries,
+        backoff_factor=0.5,
+        status_forcelist=[429, 500, 502, 503, 504],
+    )
+    adapter = _TLSAdapter(max_retries=retry)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
 
 
 class TavilySearchPlugin(SourcePlugin):
@@ -60,7 +96,8 @@ class TavilySearchPlugin(SourcePlugin):
         }
 
         try:
-            response = requests.post(url, json=payload, timeout=30)
+            session = _resilient_session(max_retries=3)
+            response = session.post(url, json=payload, timeout=30)
             response.raise_for_status()
             data = response.json()
             
@@ -133,13 +170,14 @@ class BochaSearchPlugin(SourcePlugin):
         
         payload = {
             "query": query,
-            "freshness": "noLimit", # or "oneDay", "oneWeek", "oneMonth", "oneYear"
+            "freshness": kwargs.get("freshness", "oneMonth"),
             "summary": True,
             "count": limit
         }
 
         try:
-            response = requests.post(url, headers=headers, json=payload, timeout=30)
+            session = _resilient_session(max_retries=2)
+            response = session.post(url, headers=headers, json=payload, timeout=30)
             response.raise_for_status()
             data = response.json()
             

@@ -242,7 +242,7 @@ class BrightDataPlugin(SourcePlugin):
             else:
                 content = scraped or ""
                 status = "success"
-            
+
             # 如果没有爬取到内容，跳过
             if not content or status == "failed":
                 continue

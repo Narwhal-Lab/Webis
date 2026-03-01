@@ -1,617 +1,366 @@
 # Plugin Development Guide
 
-Learn how to create custom plugins for Webis.
+Learn how to create custom plugins for Webis v2.
 
 ## Overview
 
-Webis is built on a plugin architecture that allows you to extend its functionality. There are three main types of plugins:
+Webis uses a **plugin architecture** with six plugin base types:
 
-1. **Source Plugins** - Fetch data from various sources
-2. **Processor Plugins** - Transform and clean data
-3. **Extractor Plugins** - Extract structured information
+| Type | Base Class | Purpose |
+|------|-----------|---------|
+| **Source** | `SourcePlugin` | Fetch data from external sources |
+| **Processor** | `ProcessorPlugin` | Transform and clean documents |
+| **Extractor** | `ExtractorPlugin` | Extract structured information |
+| **Output** | `OutputPlugin` | Generate output artifacts (reports, etc.) |
+| **Model** | `ModelPlugin` | ML model wrappers |
+| **Notification** | `NotificationPlugin` | Alert/notification integrations |
 
-## Plugin Structure
+Plugins are registered via the singleton `PluginRegistry` and discovered
+automatically when their module is imported.
 
-### Basic Plugin Template
+## Registered Plugins (v2.0)
 
-Create a plugin by extending the base plugin class:
+### Source Plugins (10)
+
+| Name | Class | API Key | Description |
+|------|-------|---------|-------------|
+| `tavily_search` | `TavilySearchPlugin` | `TAVILY_API_KEY` | Tavily AI search |
+| `bocha_search` | `BochaSearchPlugin` | `BOCHA_API_KEY` | Bocha search API |
+| `exa_firecrawl_crawler` | `ExaFirecrawlCrawler` | `EXA_API_KEY` | Exa + Firecrawl |
+| `serper_search` | `SerperSearchPlugin` | `SERPER_API_KEY` | Serper Google search |
+| `serpapi` | `SerpApiPlugin` | `SERPAPI_API_KEY` | SerpAPI |
+| `bright_data` | `BrightDataPlugin` | `BRIGHTDATA_API_TOKEN` | Bright Data scraping |
+| `github` | `GitHubSearchPlugin` | `GITHUB_TOKEN` | GitHub search |
+| `gnews` | `GNewsPlugin` | `GNEWS_API_KEY` | Google News |
+| `hackernews` | `HackerNewsPlugin` | *(none)* | Hacker News |
+| `semantic_scholar` | `SemanticScholarPlugin` | *(none)* | Academic papers |
+
+### Processor Plugins (5)
+
+| Name | Class | Description |
+|------|-------|-------------|
+| `html_cleaner` | `HTMLCleanerPlugin` | HTML → clean text |
+| `html_fetcher` | `HtmlFetcherPlugin` | Fetch full HTML from URL |
+| `pdf_extractor` | `PDFPlugin` | PDF text extraction |
+| `document_parser` | `DocumentParsePlugin` | Generic document parsing |
+| `video_processor` | `VideoPlugin` | Video processing |
+
+### Extractor Plugins (1)
+
+| Name | Class | Description |
+|------|-------|-------------|
+| `llm_extractor` | `LLMExtractorPlugin` | LLM-based structured extraction |
+
+### Output Plugins (1)
+
+| Name | Class | Description |
+|------|-------|-------------|
+| `html_report` | `HtmlReportPlugin` | 3-agent HTML report pipeline |
+
+### Additional (not auto-registered)
+
+- `EmbeddingGemmaPlugin` — instantiated on demand for RAG embedding
+- `baidu_search`, `smart_fetcher`, `mock_source` — available but not auto-loaded
+- `dingtalk_plugin`, `slack_plugin` — notification plugins (manual registration)
+
+## Plugin Interface
+
+### SourcePlugin
+
+All source plugins must implement the `fetch()` method:
 
 ```python
-from webis.core.plugin import BasePlugin, PluginConfig
-from typing import Dict, Any, List, Optional
-from webis.core.schema import WebisDocument
+from webis.core.plugin import SourcePlugin
+from webis.core.schema import WebisDocument, PipelineContext
+from typing import Iterator
 
-class MyPlugin(BasePlugin):
-    name = "my_plugin"
-    description = "My custom plugin"
-    version = "1.0.0"
-    author = "Your Name"
-    email = "your@email.com"
+class MySearchPlugin(SourcePlugin):
+    """Custom search source plugin."""
 
-    class Config(PluginConfig):
-        param1: str = "default_value"
-        param2: int = 10
+    name = "my_search"
+    description = "My custom search source"
+    source_type = "web"              # web | api | file | stream
+    supports_pagination = False
+    supports_incremental = False
+    max_results_per_call = 20
 
-    def setup(self):
-        """Initialize plugin resources"""
-        pass
-
-    def run(self, input_data: Any) -> Any:
-        """Execute plugin logic"""
-        pass
-
-    def cleanup(self):
-        """Clean up plugin resources"""
-        pass
-```
-
-### Plugin Registration
-
-Plugins are automatically discovered through entry points. Add this to `pyproject.toml`:
-
-```toml
-[project.entry-points."webis.plugins.sources"]
-my_plugin = "my_package.plugins:MySourcePlugin"
-
-[project.entry-points."webis.plugins.processors"]
-my_plugin = "my_package.plugins:MyProcessorPlugin"
-
-[project.entry-points."webis.plugins.extractors"]
-my_plugin = "my_package.plugins:MyExtractorPlugin"
-```
-
-## Source Plugins
-
-Source plugins fetch data from external sources.
-
-### Base Source Plugin
-
-```python
-from webis.core.plugin import BaseSourcePlugin
-from typing import List, Optional
-from webis.core.schema import WebisDocument, DocumentType
-
-class MySourcePlugin(BaseSourcePlugin):
-    name = "my_source"
-    description = "My custom data source"
-
-    async def search(self, query: str, config: Dict[str, Any]) -> List[WebisDocument]:
+    def fetch(
+        self,
+        query: str,
+        limit: int = 10,
+        context: PipelineContext = None,
+        **kwargs,
+    ) -> Iterator[WebisDocument]:
         """
-        Search for documents using the plugin
+        Fetch documents matching the query.
 
         Args:
-            query: Search query
-            config: Plugin configuration
+            query: Search query string
+            limit: Maximum results to return
+            context: Pipeline context (shared state)
+            **kwargs: Additional parameters
 
-        Returns:
-            List of WebisDocument objects
+        Yields:
+            WebisDocument instances
         """
-        # Implement your search logic here
-        results = []
+        # Your search logic here
+        import requests
 
-        # Example: Fetch from API
-        response = requests.get(
+        resp = requests.get(
             "https://api.example.com/search",
-            params={"q": query}
+            params={"q": query, "limit": limit},
+            headers={"Authorization": f"Bearer {self._get_api_key()}"},
         )
 
-        # Convert to WebisDocument
-        for item in response.json()["results"]:
-            doc = WebisDocument(
+        for item in resp.json().get("results", []):
+            yield WebisDocument(
                 content=item["content"],
-                url=item["url"],
-                title=item.get("title"),
-                doc_type=DocumentType.HTML,
-                source_plugin=self.name
-            )
-            results.append(doc)
-
-        return results
-
-    def validate_config(self, config: Dict[str, Any]) -> Dict[str, Any]:
-        """Validate and normalize plugin configuration"""
-        # Set defaults
-        config.setdefault("max_results", 10)
-
-        # Validate parameters
-        if config["max_results"] < 1:
-            raise ValueError("max_results must be > 0")
-
-        return config
-```
-
-### Example: Custom News Source
-
-```python
-from webis.core.plugin import BaseSourcePlugin
-from typing import List
-from webis.core.schema import WebisDocument, DocumentType
-
-class NewsSourcePlugin(BaseSourcePlugin):
-    name = "custom_news"
-    description = "Custom news source"
-
-    async def search(self, query: str, config: Dict[str, Any]) -> List[WebisDocument]:
-        # Mock news data
-        mock_news = [
-            {
-                "title": f"News about {query}",
-                "content": "Sample news content...",
-                "url": "https://example.com/news/1",
-                "published_at": "2024-01-01"
-            },
-            # ... more news items
-        ]
-
-        results = []
-        for item in mock_news[:config["max_results"]]:
-            doc = WebisDocument(
-                content=item["content"],
-                url=item["url"],
-                title=item["title"],
-                doc_type=DocumentType.HTML,
-                metadata={
-                    "published_at": item["published_at"]
+                doc_type="html",
+                meta={
+                    "url": item["url"],
+                    "title": item.get("title"),
+                    "source_plugin": self.name,
                 },
-                source_plugin=self.name
             )
-            results.append(doc)
 
-        return results
+    def _get_api_key(self) -> str:
+        import os
+        return os.environ.get("MY_SEARCH_API_KEY", "")
 ```
 
-## Processor Plugins
+### ProcessorPlugin
 
-Processor plugins transform and clean data.
-
-### Base Processor Plugin
+Processor plugins transform documents:
 
 ```python
-from webis.core.plugin import BaseProcessorPlugin
+from webis.core.plugin import ProcessorPlugin
+from webis.core.schema import WebisDocument, PipelineContext
 from typing import List
-from webis.core.schema import WebisDocument
 
-class MyProcessorPlugin(BaseProcessorPlugin):
-    name = "my_processor"
-    description = "My custom processor"
+class MyCleanerPlugin(ProcessorPlugin):
+    """Custom document cleaner."""
 
-    async def process(self, documents: List[WebisDocument], config: Dict[str, Any]) -> List[WebisDocument]:
+    name = "my_cleaner"
+    description = "Custom content cleaner"
+
+    def process(
+        self,
+        documents: List[WebisDocument],
+        context: PipelineContext = None,
+        **kwargs,
+    ) -> List[WebisDocument]:
         """
-        Process a list of documents
+        Process and return cleaned documents.
 
         Args:
             documents: Input documents
-            config: Plugin configuration
+            context: Pipeline context
 
         Returns:
             Processed documents
         """
-        processed = []
-
+        result = []
         for doc in documents:
-            # Process document content
-            processed_content = self._clean_content(doc.content)
+            doc.clean_content = self._clean(doc.content)
+            result.append(doc)
+        return result
 
-            # Create processed document
-            processed_doc = doc.model_copy()
-            processed_doc.clean_content = processed_content
-            processed_doc.metadata = processed_doc.metadata or {}
-            processed_doc.metadata["processed_by"] = self.name
-
-            processed.append(processed_doc)
-
-        return processed
-
-    def _clean_content(self, content: str) -> str:
-        """Clean document content"""
-        # Implement your cleaning logic
-        content = content.strip()
-        content = " ".join(content.split())  # Remove extra whitespace
-        return content
+    def _clean(self, text: str) -> str:
+        import re
+        text = re.sub(r"<[^>]+>", "", text)
+        text = re.sub(r"\s+", " ", text).strip()
+        return text
 ```
 
-### Example: Content Cleaner
+### ExtractorPlugin
+
+Extractor plugins produce structured output:
 
 ```python
-from webis.core.plugin import BaseProcessorPlugin
+from webis.core.plugin import ExtractorPlugin
+from webis.core.schema import WebisDocument, StructuredResult, PipelineContext
 from typing import List
-from webis.core.schema import WebisDocument
-import re
 
-class ContentCleanerPlugin(BaseProcessorPlugin):
-    name = "content_cleaner"
-    description = "Clean HTML and remove unwanted content"
+class MyExtractorPlugin(ExtractorPlugin):
+    """Custom structured extractor."""
 
-    async def process(self, documents: List[WebisDocument], config: Dict[str, Any]) -> List[WebisDocument]:
-        processed = []
-
-        for doc in documents:
-            # Remove HTML tags
-            clean_content = re.sub(r'<[^>]+>', '', doc.content)
-
-            # Remove extra whitespace
-            clean_content = re.sub(r'\s+', ' ', clean_content).strip()
-
-            # Update document
-            processed_doc = doc.model_copy()
-            processed_doc.clean_content = clean_content
-            processed_doc.metadata = processed_doc.metadata or {}
-            processed_doc.metadata["cleaned_at"] = "2024-01-01T00:00:00Z"
-
-            processed.append(processed_doc)
-
-        return processed
-```
-
-## Extractor Plugins
-
-Extractor plugins extract structured information from documents.
-
-### Base Extractor Plugin
-
-```python
-from webis.core.plugin import BaseExtractorPlugin
-from typing import List, Dict, Any
-from webis.core.schema import WebisDocument, StructuredResult
-
-class MyExtractorPlugin(BaseExtractorPlugin):
     name = "my_extractor"
-    description = "My custom extractor"
+    description = "Extract entities from documents"
 
-    async def extract(self, documents: List[WebisDocument], config: Dict[str, Any]) -> StructuredResult:
+    def extract(
+        self,
+        documents: List[WebisDocument],
+        context: PipelineContext = None,
+        **kwargs,
+    ) -> StructuredResult:
         """
-        Extract structured information from documents
+        Extract structured data from documents.
 
         Args:
             documents: Input documents
-            config: Plugin configuration
+            context: Pipeline context
 
         Returns:
-            StructuredResult containing extracted data
+            StructuredResult with extracted data
         """
-        data = {}
-
-        for doc in documents:
-            # Extract information
-            extracted = self._extract_from_document(doc, config)
-
-            # Merge data
-            self._merge_data(data, extracted)
-
-        return StructuredResult(
-            data=data,
-            schema=self.get_schema()
-        )
-
-    def _extract_from_document(self, doc: WebisDocument, config: Dict[str, Any]) -> Dict[str, Any]:
-        """Extract from a single document"""
-        # Implement your extraction logic
-        return {
-            "title": self._extract_title(doc),
-            "key_points": self._extract_key_points(doc)
-        }
-
-    def get_schema(self) -> Dict[str, Any]:
-        """Get the extraction schema"""
-        return {
-            "type": "object",
-            "properties": {
-                "title": {"type": "string"},
-                "key_points": {
-                    "type": "array",
-                    "items": {"type": "string"}
-                }
-            }
-        }
-```
-
-### Example: Entity Extractor
-
-```python
-from webis.core.plugin import BaseExtractorPlugin
-from typing import List, Dict, Any
-from webis.core.schema import WebisDocument, StructuredResult
-
-class EntityExtractorPlugin(BaseExtractorPlugin):
-    name = "entity_extractor"
-    description = "Extract entities from text"
-
-    async def extract(self, documents: List[WebisDocument], config: Dict[str, Any]) -> StructuredResult:
         entities = []
-
         for doc in documents:
-            # Simple entity extraction (mock implementation)
-            entities.append({
-                "document_id": doc.id,
-                "entities": self._find_entities(doc.content),
-                "metadata": {
-                    "extractor": self.name,
-                    "config": config
-                }
-            })
+            entities.extend(self._find_entities(doc.content))
 
         return StructuredResult(
             data={"entities": entities},
-            schema=self.get_schema()
+            is_valid=True,
         )
 
-    def _find_entities(self, text: str) -> List[Dict[str, Any]]:
-        """Find entities in text"""
-        # Simple pattern matching
-        entities = []
-
-        # Find names (simplified)
-        words = text.split()
-        for i, word in enumerate(words):
-            if word.istitle() and len(word) > 3:
-                entities.append({
-                    "text": word,
-                    "type": "NAME",
-                    "position": i
-                })
-
-        return entities
-
-    def get_schema(self) -> Dict[str, Any]:
-        return {
-            "type": "object",
-            "properties": {
-                "entities": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "document_id": {"type": "string"},
-                            "entities": {
-                                "type": "array",
-                                "items": {
-                                    "type": "object",
-                                    "properties": {
-                                        "text": {"type": "string"},
-                                        "type": {"type": "string"},
-                                        "position": {"type": "integer"}
-                                    }
-                                }
-                            },
-                            "metadata": {"type": "object"}
-                        }
-                    }
-                }
-            }
-        }
-```
-
-## Plugin Configuration
-
-### PluginConfig Schema
-
-Define your plugin configuration using Pydantic:
-
-```python
-from pydantic import BaseModel, Field
-from typing import Optional
-
-class MyPluginConfig(BaseModel):
-    api_key: str = Field(..., description="API key for the service")
-    timeout: int = Field(30, description="Request timeout in seconds")
-    max_retries: int = Field(3, description="Maximum retry attempts")
-    enable_cache: bool = Field(True, description="Enable caching")
-
-    class Config:
-        schema_extra = {
-            "example": {
-                "api_key": "your_api_key",
-                "timeout": 30,
-                "max_retries": 3,
-                "enable_cache": True
-            }
-        }
-```
-
-### Configuration Validation
-
-```python
-class MyPlugin(BasePlugin):
-    class Config(PluginConfig):
-        api_key: str
-        timeout: int = 30
-        max_retries: int = 3
-
-    def setup(self):
-        # Validate configuration
-        if not self.config.api_key:
-            raise ValueError("API key is required")
-
-        # Initialize resources
-        self.client = self._create_client()
-
-    def _create_client(self):
-        # Create API client with config
-        return APIClient(
-            api_key=self.config.api_key,
-            timeout=self.config.timeout,
-            max_retries=self.config.max_retries
-        )
-```
-
-## Plugin Testing
-
-### Writing Tests
-
-```python
-import pytest
-from unittest.mock import Mock
-from webis.core.plugin import MyPlugin
-from webis.core.schema import WebisDocument
-
-@pytest.fixture
-def plugin():
-    return MyPlugin()
-
-@pytest.fixture
-def sample_document():
-    return WebisDocument(
-        content="Sample document content",
-        doc_type="text",
-        metadata={"source": "test"}
-    )
-
-def test_plugin_initialization(plugin):
-    """Test plugin initialization"""
-    assert plugin.name == "my_plugin"
-    assert plugin.version == "1.0.0"
-
-def test_plugin_setup(plugin):
-    """Test plugin setup"""
-    plugin.setup()
-    assert hasattr(plugin, 'client')
-
-async def test_plugin_process(plugin, sample_document):
-    """Test document processing"""
-    result = await plugin.process([sample_document], {})
-
-    assert len(result) == 1
-    assert result[0].content == "processed content"
-
-def test_config_validation():
-    """Test configuration validation"""
-    # Valid config
-    config = {"api_key": "test_key", "timeout": 30}
-    validated = plugin.validate_config(config)
-    assert validated["timeout"] == 30
-
-    # Invalid config
-    with pytest.raises(ValueError):
-        plugin.validate_config({"api_key": ""})
-```
-
-### Integration Tests
-
-```python
-import pytest
-from webis.core.pipeline import Pipeline
-
-@pytest.mark.asyncio
-async def test_plugin_integration():
-    """Test plugin integration with pipeline"""
-    pipeline = Pipeline()
-    pipeline.add_source("my_plugin", "source")
-    pipeline.add_processor("my_processor", "process")
-
-    context = PipelineContext(query="test query")
-    result = await pipeline.run(context)
-
-    assert len(result.documents) > 0
-    assert all(doc.source_plugin == "my_plugin" for doc in result.documents)
-```
-
-## Plugin Best Practices
-
-### 1. Follow the Interface
-
-Always implement the required methods:
-- `setup()` - Initialize resources
-- `run()` - Main logic
-- `cleanup()` - Release resources
-
-### 2. Handle Errors Gracefully
-
-```python
-async def search(self, query: str, config: Dict[str, Any]) -> List[WebisDocument]:
-    try:
-        # Your implementation
-        pass
-    except Exception as e:
-        # Log error
-        self.logger.error(f"Error searching: {e}")
-
-        # Return empty list or raise appropriate exception
+    def _find_entities(self, text: str) -> list:
+        # Your extraction logic
         return []
 ```
 
-### 3. Use Async/await
+### OutputPlugin
 
-All plugin methods should be async:
-
-```python
-async def process(self, documents: List[WebisDocument], config: Dict[str, Any]) -> List[WebisDocument]:
-    # Async implementation
-    await asyncio.sleep(1)  # Example async operation
-    return documents
-```
-
-### 4. Add Proper Logging
+Output plugins generate final artifacts:
 
 ```python
-import logging
+from webis.core.plugin import OutputPlugin
 
-logger = logging.getLogger(__name__)
+class MyReportPlugin(OutputPlugin):
+    """Custom report generator."""
 
-class MyPlugin(BasePlugin):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.logger = logging.getLogger(f"{__name__}.{self.name}")
+    name = "my_report"
+    description = "Generate custom report"
 
-    def setup(self):
-        self.logger.info("Initializing my plugin")
-```
-
-### 5. Document Your Plugin
-
-```python
-class MyPlugin(BasePlugin):
-    """
-    A plugin that extracts data from external sources.
-
-    This plugin supports the following features:
-    - Search functionality
-    - Filtering and sorting
-    - Pagination
-    """
-
-    def get_documentation(self) -> str:
-        return """
-        # My Plugin Documentation
-
-        ## Features
-        - Feature 1: Description
-        - Feature 2: Description
-
-        ## Configuration
-        - `param1`: Description (required)
-        - `param2`: Description (optional, default: 10)
-
-        ## Example
-        ```python
-        plugin = MyPlugin()
-        plugin.setup()
-        results = await plugin.search("query", {"param1": "value"})
-        ```
+    def save(self, **kwargs) -> bool:
         """
+        Generate and save the output artifact.
+
+        Returns:
+            True on success, False otherwise.
+        """
+        rag_store_path = kwargs.get("rag_store_path")
+        output_dir = kwargs.get("output_dir")
+        query = kwargs.get("query", "")
+
+        # Generate your report
+        report_content = self._generate(rag_store_path, query)
+
+        # Save to file
+        import os
+        output_path = os.path.join(output_dir, "report.txt")
+        with open(output_path, "w") as f:
+            f.write(report_content)
+
+        return True
 ```
 
-### 6. Version Your Plugins
+## Plugin Registration
+
+### Automatic Registration
+
+Add your plugin to the appropriate `__init__.py` so it's imported at
+startup:
 
 ```python
-class MyPlugin(BasePlugin):
-    name = "my_plugin"
-    version = "1.0.0"
-    api_version = "v1"
-
-    def check_compatibility(self):
-        """Check compatibility with Webis version"""
-        from webis import __version__
-        required_version = "2.0.0"
-
-        if version.parse(__version__) < version.parse(required_version):
-            raise CompatibilityError(
-                f"Plugin requires Webis >= {required_version}, got {__version__}"
-            )
+# src/webis/plugins/sources/__init__.py
+from .my_search_plugin import MySearchPlugin  # auto-registers on import
 ```
+
+### Manual Registration
+
+```python
+from webis.core.plugin import get_default_registry
+
+registry = get_default_registry()
+registry.register_source(MySearchPlugin())
+```
+
+### Entry Points (pyproject.toml)
+
+For installable plugins, use entry points:
+
+```toml
+[project.entry-points."webis.plugins.sources"]
+my_search = "my_package.plugins:MySearchPlugin"
+```
+
+## Using the LLM Router in Plugins
+
+Plugins can leverage the shared LLM router for AI-powered processing:
+
+```python
+from webis.core.llm.base import get_default_router, LLMResponse
+
+router = get_default_router()
+
+response: LLMResponse = router.chat(
+    messages=[
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Classify this text: ..."},
+    ],
+    temperature=0.3,
+    max_tokens=500,
+    json_mode=True,
+)
+
+result = json.loads(response.content)
+```
+
+The router handles:
+- Automatic fallback to backup models
+- Response caching (SHA256-keyed)
+- Token and cost tracking
+- Provider abstraction (OpenAI, DeepSeek, SiliconFlow, Anthropic)
+
+## Testing Plugins
+
+### Unit Test
+
+```python
+import pytest
+from webis.core.schema import WebisDocument, DocumentType
+
+def test_my_plugin_process():
+    from my_package.plugins import MyCleanerPlugin
+
+    plugin = MyCleanerPlugin()
+    docs = [
+        WebisDocument(
+            content="<p>Hello <b>world</b></p>",
+            doc_type=DocumentType.HTML,
+        )
+    ]
+
+    result = plugin.process(docs)
+    assert len(result) == 1
+    assert result[0].clean_content == "Hello world"
+```
+
+### Integration Test with Pipeline
+
+```python
+import pytest
+from webis.core.plugin import get_default_registry
+
+def test_plugin_registered():
+    registry = get_default_registry()
+    plugin = registry.get_source("my_search")
+    assert plugin is not None
+    assert plugin.name == "my_search"
+```
+
+## Best Practices
+
+1. **Implement `fetch()` as a generator** — use `yield` for memory efficiency
+2. **Handle errors gracefully** — return empty results rather than crashing
+3. **Respect rate limits** — use `tenacity` or `time.sleep()` for API calls
+4. **Log meaningfully** — use `logging.getLogger(__name__)`
+5. **Use environment variables** for API keys — never hardcode credentials
+6. **Add metadata** — populate `DocumentMetadata` (url, title, source_plugin)
+7. **Version your plugin** — maintain compatibility with Webis core
 
 ---
 
 For more information:
-- [API Reference](api.md) - Complete API documentation
-- [User Guide](user-guide.md) - Complete feature walkthrough
-- [Quick Start](quickstart.md) - Get started in 5 minutes
+- [API Reference](api.md) — Core classes and CLI reference
+- [User Guide](user-guide.md) — Complete feature walkthrough
+- [Quick Start](quickstart.md) — Get started in 5 minutes

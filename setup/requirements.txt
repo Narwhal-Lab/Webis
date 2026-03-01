@@ -5,7 +5,6 @@ python-dotenv>=1.0.0  # Environment variable management
 requests>=2.31.0  # HTTP requests
 
 # Crawler dependencies
-ddgs>=9.8.0  # DuckDuckGo search library (recommended to use new version)
 scrapy>=2.11.0  # Web crawling framework
 brightdata-sdk>=0.4.0  # Bright Data SDK for web crawling/search
 
@@ -48,3 +47,13 @@ networkx>=3.2.0
 pandas>=1.5.0,<2.0.0
 openpyxl>=3.1.0
 markdown>=3.5.0
+
+# Image Report Pipeline (Gemini gemini-3-pro-image-preview)
+# Uses requests (already listed above) for Gemini API calls.
+# No additional dependencies required.
+
+# RAG dependencies (required for `webis run` knowledge base build)
+sentence-transformers>=2.2.0
+openai>=1.0.0
+transformers>=4.30.0
+numpy>=1.20.0

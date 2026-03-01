@@ -38,7 +38,7 @@ async def build_competitive_intelligence_kb():
 
             result = await client.run(
                 query=query,
-                sources=["duckduckgo", "gnews"],
+                sources=["tavily_search", "gnews"],
                 limit=10,
                 output=f"./output/competitors/{company}"
             )
@@ -138,10 +138,10 @@ async def build_company_knowledge_base():
 
     # Company data sources
     company_queries = [
-        ("company news", ["duckduckgo", "gnews"]),
-        ("company press releases", ["duckduckgo"]),
+        ("company news", ["tavily_search", "gnews"]),
+        ("company press releases", ["tavily_search"]),
         ("company research", ["semantic_scholar"]),
-        ("industry trends", ["duckduckgo", "hackernews"])
+        ("industry trends", ["tavily_search", "hackernews"])
     ]
 
     company_kb = {}

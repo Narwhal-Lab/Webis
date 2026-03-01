@@ -47,7 +47,6 @@ dependencies = [
     "click>=8.0.0",
     "rich>=10.0.0",
     "pyyaml>=6.0",
-    "ddgs>=9.8.0",
     "scrapy>=2.11.0",
     "brightdata-sdk>=0.4.0",
     "docx2txt>=0.8",

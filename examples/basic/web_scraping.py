@@ -24,7 +24,7 @@ async def main():
 
     result = await client.run(
         query="Latest artificial intelligence news",
-        sources=["duckduckgo"],
+        sources=["hackernews"],
         limit=3
     )
 
@@ -69,7 +69,7 @@ async def main():
 
     result = await client.run(
         query="Recent tech news",
-        sources=["duckduckgo", "hackernews"],
+        sources=["gnews", "hackernews"],
         limit=10,
         output="./output/tech_news"
     )
@@ -81,7 +81,7 @@ async def main():
     print("-" * 50)
 
     pipeline = Pipeline()
-    pipeline.add_source("duckduckgo", "search", max_results=5)
+    pipeline.add_source("hackernews", "search", max_results=5)
     pipeline.add_processor("html_cleaner", "clean")
     pipeline.add_extractor("llm_extractor", "extract", model="gpt-3.5")
 

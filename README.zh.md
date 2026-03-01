@@ -197,7 +197,6 @@ Webis 建立在强大的插件架构之上：
 
 ### 数据源插件
 
-- `duckduckgo` - DuckDuckGo 搜索
 - `semantic_scholar` - 学术论文
 - `github` - GitHub 仓库
 - `gnews` - Google News
@@ -270,5 +269,5 @@ Webis 建立在强大的插件架构之上：
 
 <div align="center">
 由 Webis 团队精心制作 ❤️<br>
-🌐 [网站](https://webis.dev) | 📧 [联系](mailto:contact@webis.dev)
+🌐 [网站](https://webis.tech) | 📧 [联系](mailto:contact@webis.dev)
 </div>

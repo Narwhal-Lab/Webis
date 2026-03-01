@@ -27,11 +27,16 @@ class AgentState:
     required_count: int
     current_docs: List[WebisDocument] = field(default_factory=list)
     rejected_docs: List[WebisDocument] = field(default_factory=list)
+    seen_urls: set = field(default_factory=set)
     attempts: int = 0
     max_attempts: int = 5
     failed_tools: List[str] = field(default_factory=list)
     used_tools_previous_iteration: List[str] = field(default_factory=list)
     
+    def _doc_url(self, doc: WebisDocument) -> Optional[str]:
+        """Extract URL from a document (used for dedup)."""
+        return (doc.meta.url if doc.meta else None) or None
+
     def should_continue(self) -> bool:
         """Check if agent should continue crawling."""
         return (
@@ -39,15 +44,21 @@ class AgentState:
             self.attempts < self.max_attempts
         )
     
+    def is_url_seen(self, doc: WebisDocument) -> bool:
+        """Check whether a document's URL has already been processed."""
+        url = self._doc_url(doc)
+        return url is not None and url in self.seen_urls
+
     def add_decision(self, doc: WebisDocument, verdict: str, reason: str) -> None:
         """Record a decision about a document."""
+        url = self._doc_url(doc) or doc.id
+        if url:
+            self.seen_urls.add(url)
         if verdict == "ACCEPT":
             self.current_docs.append(doc)
-            url = doc.meta.url if doc.meta else doc.id
             logger.info(f"✓ ACCEPTED: {url} - {reason}")
         else:
             self.rejected_docs.append(doc)
-            url = doc.meta.url if doc.meta else doc.id
             logger.info(f"✗ REJECTED: {url} - {reason}")
 
 

@@ -1,5 +1,4 @@
 from .managed_search_plugin import TavilySearchPlugin, BochaSearchPlugin
-from .duckduckgo_plugin import DuckDuckGoPlugin
 from .github_plugin import GitHubSearchPlugin
 from .gnews_plugin import GNewsPlugin
 from .hackernews_plugin import HackerNewsPlugin
@@ -12,7 +11,6 @@ from .exa_firecrawl_plugin import ExaFirecrawlCrawler
 __all__ = [
     "TavilySearchPlugin",
     "BochaSearchPlugin",
-    "DuckDuckGoPlugin",
     "GitHubSearchPlugin",
     "GNewsPlugin",
     "HackerNewsPlugin",
@@ -28,7 +26,6 @@ from webis.core.plugin import get_default_registry
 registry = get_default_registry()
 registry.register(TavilySearchPlugin())
 registry.register(BochaSearchPlugin())
-registry.register(DuckDuckGoPlugin())
 registry.register(GitHubSearchPlugin())
 registry.register(GNewsPlugin())
 registry.register(HackerNewsPlugin())

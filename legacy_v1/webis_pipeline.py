@@ -178,7 +178,6 @@ def main():
     log("\n[1/4] crawler：开始获取数据源…")
     from crawler.agent import LangChainDataSourceAgent  # local package import
     from crawler.baidu_mcp_tool import BaiduAiSearchMcpTool
-    from crawler.ddg_scrapy_tool import DuckDuckGoScrapyTool
     from crawler.gnews_tool import GNewsTool
     from crawler.semantic_scholar import SemanticScholarTool
     from crawler.github_api_tools import GitHubSearchTool
@@ -189,7 +188,6 @@ def main():
         llm=llm,
         tools=[
             BaiduAiSearchMcpTool(output_dir=str(run_dir)),
-            DuckDuckGoScrapyTool(),
             GNewsTool(output_dir=str(run_dir)),
             SemanticScholarTool(output_dir=str(run_dir)),
             GitHubSearchTool(output_dir=str(run_dir)),

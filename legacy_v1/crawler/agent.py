@@ -32,10 +32,10 @@ except ImportError as exc:  # noqa: BLE001
 
 if not __package__:
     sys.path.append(str(pathlib.Path(__file__).resolve().parent))
-    from ddg_scrapy_tool import DuckDuckGoScrapyTool  # type: ignore  # noqa: E402
+    from hn_tool import HackerNewsTool  # type: ignore  # noqa: E402
     from tool_base import BaseTool, ToolResult  # type: ignore  # noqa: E402
 else:
-    from .ddg_scrapy_tool import DuckDuckGoScrapyTool  # noqa: F401
+    from .hn_tool import HackerNewsTool  # noqa: F401
     from .tool_base import BaseTool, ToolResult
 
 logger = logging.getLogger(__name__)
@@ -107,8 +107,8 @@ class LangChainDataSourceAgent:
 
             # 规则优先：如果任务明确要下载 PDF/文档，第一轮先走“可下载文件”的通用抓取工具，
             # 避免模型误选只抓 HTML 的通用搜索工具。
-            if round_idx == 1 and file_exts and "duckduckgo_scrapy" in self.tools:
-                tool_name = "duckduckgo_scrapy"
+            if round_idx == 1 and file_exts and "hackernews" in self.tools:
+                tool_name = "hackernews"
                 tool_task = self._build_file_query(task, file_exts)
                 tool_kwargs = {"limit": remaining}
                 selection = "rule_based_file_download"
@@ -354,8 +354,8 @@ def cli() -> None:
     output_dir = pathlib.Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    tools: List[BaseTool] = [DuckDuckGoScrapyTool()]
-    # 这些 tool 可能依赖额外 API key；CLI 里尽量“能用就注册”，不可用也不影响 DDG。
+    tools: List[BaseTool] = [HackerNewsTool(output_dir=str(output_dir))]
+    # 这些 tool 可能依赖额外 API key；CLI 里尽量“能用就注册”，不可用也不影响基础工具。
     try:
         if __package__:
             from .baidu_mcp_tool import BaiduAiSearchMcpTool  # type: ignore

@@ -1,236 +1,139 @@
+"""
+HTML Report Plugin — Multi-Agent Orchestrator
 
-import json
+This plugin replaces the previous monolithic two-stage pipeline with a
+**three-agent architecture**:
+
+1. **RAG Retrieval Agent** (``rag_retrieval_agent.py``)
+   Loads & ranks RAG documents, calls the LLM to produce a structured
+   *analysis pack*.
+
+2. **Template Design Agent** (``template_design_agent.py``)
+   Consumes the analysis pack and uses the LLM to design a customised
+   HTML + CSS template (*presentation pack* + CSS theme).
+
+3. **Report Assembly Agent** (``report_assembly_agent.py``)
+   Combines analysis + presentation + CSS and asks the LLM to output
+   the final standalone HTML report, with deterministic fallback
+   rendering and post-processing (sanitise / validate / repair).
+
+Every agent uses ``get_default_router()`` which provides the shared
+LLM Router with automatic primary → fallback model chain (router
+fallback).  This mirrors the pattern used by the data-cleaning module.
+
+The plugin itself (``HtmlReportPlugin``) remains a thin
+``OutputPlugin.save()`` entry-point so the rest of the pipeline is
+unchanged.
+"""
+
+from __future__ import annotations
+
+import logging
 import os
-import re
-import datetime
-from typing import List, Union, Any, Dict, Optional
 
 from webis.core.plugin import OutputPlugin
-from webis.core.schema import WebisDocument, StructuredResult, PipelineContext
-from webis.core.llm.base import get_default_router
+from webis.core.schema import PipelineContext
+
+from .rag_retrieval_agent import RAGRetrievalAgent
+from .template_design_agent import TemplateDesignAgent
+from .report_assembly_agent import ReportAssemblyAgent
+
+logger = logging.getLogger(__name__)
+
 
 class HtmlReportPlugin(OutputPlugin):
     """
-    Generates a beautiful HTML report from pipeline results using LLM generation.
+    Generates a beautiful HTML report **purely from the RAG knowledge
+    base** via a three-agent LLM pipeline.
+
+    No ``result.json`` or ``documents.json`` is required — the only
+    mandatory input is ``rag_store.json``.
     """
+
     name = "html_report"
-    description = "Generates a standalone HTML report by asking an LLM to render the data."
+    description = (
+        "Generates a standalone HTML report via a three-agent pipeline: "
+        "RAG retrieval → template design → report assembly."
+    )
+
+    def __init__(self, config=None):
+        super().__init__(config)
+        self._rag_agent = RAGRetrievalAgent()
+        self._template_agent = TemplateDesignAgent()
+        self._assembly_agent = ReportAssemblyAgent()
+
+    # ------------------------------------------------------------------
+    # Public entry-point
+    # ------------------------------------------------------------------
 
     def save(
         self,
-        data: Union[StructuredResult, List[Any]],
-        context: Optional[PipelineContext] = None,
-        output_dir: Optional[str] = None,
-        **kwargs
+        data=None,
+        context=None,
+        output_dir: str | None = None,
+        **kwargs,
     ) -> bool:
+        """Generate an HTML report from the RAG knowledge base.
+
+        Parameters
+        ----------
+        data:
+            Ignored — kept only for ``OutputPlugin`` interface
+            compatibility.
+        context:
+            Optional ``PipelineContext``.
+        output_dir:
+            Directory where ``report.html`` will be written.
+        **kwargs:
+            ``rag_store_path`` (str) — path to ``rag_store.json``.
+            ``query`` (str) — optional focus query.
+        """
+        rag_store_path: str | None = kwargs.get("rag_store_path")
+        query: str = (kwargs.get("query") or "").strip()
+
+        if not rag_store_path or not os.path.exists(rag_store_path):
+            # Try auto-detect in output_dir
+            if output_dir:
+                auto = os.path.join(output_dir, "rag_store.json")
+                if os.path.exists(auto):
+                    rag_store_path = auto
+            if not rag_store_path or not os.path.exists(rag_store_path):
+                logger.error("rag_store.json not provided or not found — cannot generate HTML report")
+                return False
+
         if not output_dir:
+            output_dir = os.path.dirname(rag_store_path) or "."
+
+        try:
+            html_content = self._run_multi_agent_pipeline(rag_store_path, query)
+        except Exception as e:
+            logger.exception("Multi-agent HTML pipeline failed: %s", e)
             return False
-            
-        # Prepare content for the LLM
-        result_data = {}
-        documents = []
-        task_name = "Webis Task"
-        
-        if context:
-            task_name = context.task
-            
-        if isinstance(data, StructuredResult):
-            result_data = data.data
-            documents = kwargs.get("documents", [])
-        elif isinstance(data, list):
-            if data and isinstance(data[0], WebisDocument):
-                documents = data
-                result_data = {"info": "Raw document list"}
-            else:
-                result_data = {"data": data}
-        else:
-             result_data = data
-             
-        # Generate HTML using LLM
-        html_content = self._generate_with_llm(task_name, result_data, documents)
-        
-        # Save
+
         os.makedirs(output_dir, exist_ok=True)
         report_path = os.path.join(output_dir, "report.html")
-        
         with open(report_path, "w", encoding="utf-8") as f:
             f.write(html_content)
-            
+
+        logger.info("HTML report saved to %s", report_path)
         return True
 
-    def _generate_with_llm(self, task: str, data: Dict, docs: List[WebisDocument]) -> str:
-        """
-        Uses LLM to write the HTML code dynamically.
-        """
-        # 1. Prepare Content Context
-        json_str = json.dumps(data, indent=2, ensure_ascii=False)
-        
-        # Summarize sources to avoid hitting token limits
-        sources_summary = []
-        for i, doc in enumerate(docs[:10]): # Limit to top 10 sources
-            title = doc.meta.title or f"Source {i+1}"
-            url = doc.meta.url or "#"
-            sources_summary.append(f"- [{title}]({url})")
-        
-        sources_text = "\n".join(sources_summary)
+    # ------------------------------------------------------------------
+    # Multi-agent orchestration
+    # ------------------------------------------------------------------
 
-        # 2. Construct Prompt (Migrated from demo_html.py)
-        system_prompt = """You are a professional web developer. Generate valid, complete, standalone HTML5 code.
-        
-        CRITICAL REQUIREMENTS:
-        1. Start with <!DOCTYPE html> and end with </html>
-        2. Use modern, clean UI (Tailwind or inline CSS).
-        3. Visualize the "Core Content" effectively (cards, tables, or lists).
-        4. Add a footer section with:
-           - Dark background (dark gray/black, e.g., #2b2d42 or #1a1a1a)
-           - Two-column layout for data sources
-           - Blue headings (e.g., "Reference Sources" and "Additional Resources")
-           - Light gray text for source items
-           - "Generated based on Webis" at the very bottom in small, subtle style
-        5. NO explanations, NO markdown fences (```html). JUST the raw HTML code.
-        6. Ensure all tags are properly closed.
-        """
+    def _run_multi_agent_pipeline(self, rag_store_path: str, query: str) -> str:
+        """Coordinate the three agents sequentially."""
+        logger.info("[Agent 1/3] RAG Retrieval Agent — start")
+        analysis_pack = self._rag_agent.run(rag_store_path, query)
+        logger.info("[Agent 1/3] RAG Retrieval Agent — done")
 
-        user_content = f"""
-Task Objective: {task}
+        logger.info("[Agent 2/3] Template Design Agent — start")
+        presentation_pack = self._template_agent.run(analysis_pack, query)
+        logger.info("[Agent 2/3] Template Design Agent — done")
 
-Core Data (JSON):
-{json_str}
+        logger.info("[Agent 3/3] Report Assembly Agent — start")
+        html = self._assembly_agent.run(analysis_pack, presentation_pack, query)
+        logger.info("[Agent 3/3] Report Assembly Agent — done")
 
-Reference Sources:
-{sources_text}
-"""
-
-        user_prompt = f"""Task: {task}
-        
-        Core Content:
-        {user_content}
-        
-        Requirements:
-        - Create a beautiful, modern HTML page
-        - Add a dark footer section (dark gray/black background) with:
-          * Two columns: "Reference Sources" (left) and "Additional Resources" (right)
-          * Blue section headings
-          * Light gray text for source items from the provided reference sources
-          * Split the reference sources evenly between the two columns
-          * At the very bottom: "Generated based on Webis" in small, centered, subtle text
-        - Make the main content visually appealing with cards or modern layout
-        
-        Generate the HTML now."""
-
-        # 3. Call LLM
-        try:
-            router = get_default_router()
-            
-            messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ]
-            
-            # Using the same model parameters as demo_html.py
-            response = router.chat(
-                messages,
-                model="deepseek-v3.2",
-                temperature=0.7,
-                max_tokens=4000
-            )
-            raw_html = response.content
-            
-        except Exception as e:
-            # Fallback if generation fails
-            print(f"LLM Generation failed: {e}")
-            return f"<html><body><h1>Error Generating Report</h1><p>{e}</p></body></html>"
-
-        # 4. Sanitize, Validate, Repair (if needed)
-        sanitized_html = self._sanitize_html(raw_html)
-        issues = self._validate_html(sanitized_html)
-        if issues:
-            try:
-                repaired_html = self._repair_html(router, sanitized_html, issues)
-                sanitized_html = self._sanitize_html(repaired_html)
-            except Exception as e:
-                print(f"LLM Repair failed: {e}")
-
-        return sanitized_html
-
-    def _strip_markdown_fences(self, text: str) -> str:
-        stripped = text.strip()
-        m = re.search(r"```(?:html)?\s*(.*?)\s*```", stripped, flags=re.DOTALL | re.IGNORECASE)
-        if m:
-            return m.group(1).strip()
-        if stripped.startswith("```"):
-            lines = stripped.splitlines()[1:]
-            stripped = "\n".join(lines)
-            stripped = re.sub(r"\n```\s*$", "", stripped)
-            return stripped.strip()
-        return stripped
-
-    def _sanitize_html(self, html: str) -> str:
-        s = self._strip_markdown_fences(html)
-
-        s = s.replace("“", '"').replace("”", '"').replace("‘", "'").replace("’", "'")
-
-        # Fix common model glitch patterns like '<< section ...' and '< / div >'
-        s = re.sub(r"<<\s*/\s*([A-Za-z])", r"</\1", s)
-        s = re.sub(r"<<\s*([A-Za-z])", r"<\1", s)
-
-        s = re.sub(r"<\s*/\s*([A-Za-z][\w:-]*)\s*>", r"</\1>", s)
-        s = re.sub(r"<\s+([!/A-Za-z])", r"<\1", s)
-
-        attrs = r"(?:class|id|href|src|style|lang|type|rel|name|content|crossorigin|role)"
-        s = re.sub(rf"(<\s*/?\s*)([A-Za-z][\w:-]*?)({attrs})\s*=", r"\1\2 \3=", s)
-        s = re.sub(r"(<\s*/?\s*)([A-Za-z][\w:-]*?)(aria-[\w-]+)\s*=", r"\1\2 \3=", s)
-
-        s = re.sub(r'(\s[\w:-]+)\s*=\s*"', r'\1="', s)
-
-        def _normalize_style_block(m: re.Match) -> str:
-            style = m.group(1)
-            style = (
-                style.replace("：", ":")
-                .replace("；", ";")
-                .replace("（", "(")
-                .replace("）", ")")
-                .replace("，", ",")
-            )
-            style = re.sub(r"\b(var|calc|rgba|rgb)\s*\(\s*", r"\1(", style)
-            style = re.sub(r"\(\s*--", "(--", style)
-            return f"<style>{style}</style>"
-
-        s = re.sub(r"<style[^>]*>(.*?)</style>", _normalize_style_block, s, flags=re.DOTALL | re.IGNORECASE)
-        return s.strip()
-
-    def _validate_html(self, html: str) -> List[str]:
-        issues = []
-        if "<!DOCTYPE html" not in html and "<!doctype html" not in html:
-            issues.append("missing_doctype")
-        if "</html>" not in html.lower():
-            issues.append("missing_html_close")
-        if re.search(r"<<\s*/?\s*[A-Za-z]", html):
-            issues.append("double_angle_brackets_in_tags")
-        if "```" in html:
-            issues.append("markdown_fence_remaining")
-        if any(ch in html for ch in ["“", "”", "‘", "’"]):
-            issues.append("curly_quotes_remaining")
-        return issues
-
-    def _repair_html(self, router, broken_html: str, issues: List[str]) -> str:
-        system_prompt = (
-            "You are an HTML Repair Expert. "
-            f"The following HTML has issues: {', '.join(issues)}.\n\n"
-            "Please fix the HTML so it is valid HTML5.\n"
-            "- Ensure <!DOCTYPE html> is present.\n"
-            "- Fix broken tags.\n"
-            "- Remove markdown fences.\n"
-            "- Return ONLY the fixed HTML."
-        )
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": broken_html},
-        ]
-        response = router.chat(
-            messages,
-            model="deepseek-v3.2",
-            temperature=0.1,
-            max_tokens=8000
-        )
-        return response.content
+        return html

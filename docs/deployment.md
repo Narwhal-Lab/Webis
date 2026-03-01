@@ -1,6 +1,6 @@
 # Deployment Guide
 
-Learn how to deploy Webis in various environments.
+Deploy Webis v2 in development, Docker, and production environments.
 
 ## Table of Contents
 
@@ -8,16 +8,17 @@ Learn how to deploy Webis in various environments.
 2. [Docker Deployment](#docker-deployment)
 3. [Production Deployment](#production-deployment)
 4. [Cloud Deployment](#cloud-deployment)
-5. [Monitoring and Logging](#monitoring-and-logging)
-6. [Scaling and Performance](#scaling-and-performance)
+5. [Monitoring & Logging](#monitoring--logging)
+6. [Scaling](#scaling)
 
 ## Development Setup
 
 ### Prerequisites
 
-- Python 3.10+
-- pip or uv
-- Docker (optional)
+- Python 3.9+ (3.10 recommended)
+- conda or pip
+- At least one LLM API key (DeepSeek, OpenAI, or SiliconFlow)
+- At least one search API key (Tavily, Bocha, Serper, etc.)
 
 ### Local Development
 
@@ -26,50 +27,83 @@ Learn how to deploy Webis in various environments.
 git clone https://github.com/Narwhal-Lab/Webis.git
 cd webis
 
-# Create virtual environment
+# Option A: Conda setup (recommended)
+bash setup/conda_setup.sh
+conda activate webis
+
+# Option B: Manual
 python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+source venv/bin/activate
+pip install -e .
+```
 
-# Install dependencies
-pip install -e ".[dev]"
+### Environment Configuration
 
-# Set up pre-commit hooks
-pre-commit install
-
-# Copy environment file
+```bash
 cp .env.example .env
 ```
 
-### Environment Variables
-
-Create `.env` file:
+**Required variables:**
 
 ```env
-# Core Configuration
-WEBIS_ENV=development
-WEBIS_PORT=8000
-WEBIS_HOST=localhost
+# LLM Provider (at least one)
+DEEPSEEK_API_KEY=your_key
+# OPENAI_API_KEY=your_key
+# SILICONFLOW_API_KEY=your_key
+# ANTHROPIC_API_KEY=your_key
 
-# Database
+# Search APIs (at least one)
+TAVILY_API_KEY=your_key
+BOCHA_API_KEY=your_key
+# EXA_API_KEY=your_key
+```
+
+**Optional variables:**
+
+```env
+# Core
+WEBIS_ENV=development
+WEBIS_LLM_MODEL=deepseek-v3.2    # Override model selection
+LOG_LEVEL=INFO
+
+# Custom LLM endpoint
+CUSTOM_API_KEY=your_key
+CUSTOM_MODEL_NAME=your-model
+CUSTOM_BASE_URL=https://your-endpoint/v1
+
+# Database (optional)
 DATABASE_URL=sqlite:///webis.db
 
-# Redis (for background tasks)
+# Redis (optional, for background tasks)
 REDIS_URL=redis://localhost:6379/0
 
-# LLM Providers
-OPENAI_API_KEY=your_openai_key
-ANTHROPIC_API_KEY=your_anthropic_key
-DEEPSEEK_API_KEY=your_deepseek_key
+# Vector store
+VECTOR_STORE_PATH=./data/chroma_db
 
-# Search APIs
-SERPAPI_API_KEY=your_serpapi_key
-TAVILY_API_KEY=your_tavily_key
-EXA_API_KEY=your_exa_key
-FIRECRAWL_API_KEY=your_firecrawl_key
+# Embedding model (offline mode)
+HF_HUB_OFFLINE=1
+TRANSFORMERS_OFFLINE=1
 
-# Security
-SECRET_KEY=your_secret_key_here
-CORS_ORIGINS=http://localhost:8501
+# Additional search APIs
+SERPAPI_API_KEY=your_key
+SERPER_API_KEY=your_key
+BRIGHTDATA_API_TOKEN=your_token
+```
+
+### Verify Installation
+
+```bash
+# Test CLI
+webis --help
+
+# Test a quick pipeline
+webis run "test query" --limit 2
+
+# Test report generation
+webis html-report ./output/<timestamp>/rag_store.json --query "test"
+
+# Launch visualizer
+webis visualizer
 ```
 
 ## Docker Deployment
@@ -77,20 +111,26 @@ CORS_ORIGINS=http://localhost:8501
 ### Quick Start
 
 ```bash
-# Clone repository
 git clone https://github.com/Narwhal-Lab/Webis.git
 cd webis
+cp .env.example .env
+# Edit .env with your API keys
 
-# Start services
 docker-compose up -d
-
-# View logs
-docker-compose logs -f webis-api
 ```
 
-### Docker Compose Configuration
+### Services
 
-File: `docker-compose.yml`
+| Service | Port | Description |
+|---------|------|-------------|
+| `webis-api` | 8000 | Main API server |
+| `webis-worker` | — | Celery background worker |
+| `webis-beat` | — | Celery scheduler |
+| `redis` | 6379 | Cache & message broker |
+| `postgres` | 5432 | Persistent storage |
+| `neo4j` | 7474/7687 | Graph database (optional) |
+
+### Docker Compose Configuration
 
 ```yaml
 version: '3.8'
@@ -102,41 +142,17 @@ services:
       - "8000:8000"
     environment:
       - WEBIS_ENV=production
-      - DATABASE_URL=postgresql://user:pass@postgres:5432/webis
+      - DATABASE_URL=postgresql://webis:password@postgres:5432/webis
       - REDIS_URL=redis://redis:6379/0
+    env_file:
+      - .env
     depends_on:
       - postgres
       - redis
     volumes:
       - ./data:/app/data
+      - ./output:/app/output
       - ./logs:/app/logs
-    restart: unless-stopped
-
-  webis-worker:
-    build: .
-    command: celery -A webis.core.celery_app worker --loglevel=info
-    environment:
-      - WEBIS_ENV=production
-      - DATABASE_URL=postgresql://user:pass@postgres:5432/webis
-      - REDIS_URL=redis://redis:6379/0
-    depends_on:
-      - postgres
-      - redis
-    volumes:
-      - ./data:/app/data
-      - ./logs:/app/logs
-    restart: unless-stopped
-
-  webis-beat:
-    build: .
-    command: celery -A webis.core.celery_app beat --loglevel=info
-    environment:
-      - WEBIS_ENV=production
-      - DATABASE_URL=postgresql://user:pass@postgres:5432/webis
-      - REDIS_URL=redis://redis:6379/0
-    depends_on:
-      - postgres
-      - redis
     restart: unless-stopped
 
   redis:
@@ -159,527 +175,260 @@ services:
       - postgres_data:/var/lib/postgresql/data
     restart: unless-stopped
 
-  neo4j:
-    image: neo4j:5-community
-    environment:
-      - NEO4J_AUTH=neo4j/password
-      - NEO4J_PLUGINS=apoc
-    ports:
-      - "7474:7474"
-      - "7687:7687"
-    volumes:
-      - neo4j_data:/data
-    restart: unless-stopped
-
 volumes:
   redis_data:
   postgres_data:
-  neo4j_data:
 ```
 
-### Production Docker Compose
+### Docker Operations
 
-File: `docker-compose.prod.yml`
+```bash
+# Start
+docker-compose up -d
 
-```yaml
-version: '3.8'
+# View logs
+docker-compose logs -f webis-api
 
-services:
-  webis-api:
-    build:
-      context: .
-      dockerfile: Dockerfile.prod
-    environment:
-      - WEBIS_ENV=production
-      - DATABASE_URL=postgresql://${DB_USER}:${DB_PASSWORD}@postgres:5432/webis
-      - REDIS_URL=redis://redis:6379/0
-      - GUNICORN_WORKERS=4
-      - GUNICORN_WORKER_CLASS=sync
-      - GUNICORN_WORKER_CONNECTIONS=1000
-    ports:
-      - "80:8000"
-    depends_on:
-      - postgres
-      - redis
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+# Enter container
+docker-compose exec webis-api bash
 
-  # ... (other services similar to development)
+# Rebuild after code changes
+docker-compose build && docker-compose up -d
 
-  nginx:
-    image: nginx:alpine
-    ports:
-      - "443:443"
-      - "80:80"
-    volumes:
-      - ./nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./ssl:/etc/nginx/ssl:ro
-    depends_on:
-      - webis-api
-    restart: unless-stopped
+# Stop
+docker-compose down
 ```
+
+See [Docker Usage Guide](docker-usage.md) for detailed instructions.
 
 ## Production Deployment
 
-### Prerequisites
+### Server Prerequisites
 
 - Linux server (Ubuntu 20.04+)
-- PostgreSQL database
-- Redis server
-- Reverse proxy (nginx, Apache)
+- 4 GB RAM minimum (8 GB+ recommended)
+- PostgreSQL 15+
+- Redis 7+
+- nginx (reverse proxy)
 - SSL certificate
-- Monitoring setup
 
-### Server Setup
+### Application Setup
 
 ```bash
-# Update system
-sudo apt update && sudo apt upgrade -y
-
-# Install dependencies
-sudo apt install -y python3 python3-pip nginx postgresql redis-server
-
-# Create user
+# Create system user
 sudo useradd -m -s /bin/bash webis
+sudo su - webis
 
-# Set permissions
-sudo chown -R webis:webis /opt/webis
-```
-
-### Database Setup
-
-```bash
-# Connect to PostgreSQL
-sudo -u postgres psql
-
--- Create database
-CREATE DATABASE webis;
-
--- Create user
-CREATE USER webis_user WITH PASSWORD 'secure_password';
-
--- Grant permissions
-GRANT ALL PRIVILEGES ON DATABASE webis TO webis_user;
-
--- Exit
-\q
-```
-
-### Application Deployment
-
-```bash
-# Deploy application
-sudo -u webis git clone https://github.com/Narwhal-Lab/Webis.git /opt/webis
+# Clone and install
+git clone https://github.com/Narwhal-Lab/Webis.git /opt/webis
 cd /opt/webis
+bash setup/conda_setup.sh
+conda activate webis
 
-# Create virtual environment
-python3 -m venv venv
-source venv/bin/activate
+# Configure
+cp .env.example .env
+# Edit .env with production values
+```
 
-# Install dependencies
-pip install -e ".[dev]"
+### systemd Service
 
-# Set up environment
-cp .env.example /opt/webis/.env
-# Edit .env file with production values
-
-# Run migrations
-python -c "from webis.core.db import init_db; init_db()"
-
-# Create systemd service
-sudo tee /etc/systemd/system/webis.service > /dev/null <<EOF
+```ini
+# /etc/systemd/system/webis.service
 [Unit]
-Description=Webis API Service
-After=network.target
+Description=Webis Pipeline Service
+After=network.target postgresql.service redis.service
 
 [Service]
 User=webis
 Group=webis
 WorkingDirectory=/opt/webis
-Environment=PATH=/opt/webis/venv/bin
-ExecStart=/opt/webis/venv/bin/gunicorn -w 4 -b 0.0.0.0:8000 webis.server:app
-Restart=always
+Environment=PATH=/home/webis/miniconda3/envs/webis/bin
+ExecStart=/home/webis/miniconda3/envs/webis/bin/python -m webis.cli run
+Restart=on-failure
+RestartSec=10
 
 [Install]
 WantedBy=multi-user.target
-EOF
+```
 
-# Enable and start service
+```bash
 sudo systemctl daemon-reload
 sudo systemctl enable webis
 sudo systemctl start webis
 ```
 
-### Reverse Proxy Setup
+### nginx Reverse Proxy
 
 ```nginx
-# /etc/nginx/sites-available/webis
 server {
     listen 80;
     server_name your-domain.com;
 
-    # Rate limiting
-    limit_req_zone $binary_remote_addr zone=api:10m rate=10r/s;
-    limit_req zone=api burst=20 nodelay;
-
-    # Security headers
-    add_header X-Frame-Options "SAMEORIGIN";
-    add_header X-XSS-Protection "1; mode=block";
-    add_header X-Content-Type-Options "nosniff";
-    add_header Referrer-Policy "no-referrer";
-    add_header Content-Security-Policy "default-src 'self'";
-
-    # Gunicorn proxy
     location / {
-        limit_req zone=api burst=20 nodelay;
-        proxy_pass http://127.0.0.1:8000;
+        proxy_pass http://127.0.0.1:8501;  # Streamlit visualizer
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
         proxy_read_timeout 300s;
-    }
-
-    # Static files
-    location /static/ {
-        alias /opt/webis/static/;
-        expires 1y;
-        add_header Cache-Control "public, immutable";
-    }
-
-    # Health check
-    location /health {
-        access_log off;
-        proxy_pass http://127.0.0.1:8000/health;
     }
 }
 ```
 
-### SSL Configuration
+### SSL with Certbot
 
 ```bash
-# Install Certbot
 sudo apt install certbot python3-certbot-nginx
-
-# Get certificate
 sudo certbot --nginx -d your-domain.com
-
-# Renewal script
-sudo tee /etc/cron.monthly/certbot > /dev/null <<EOF
-#!/bin/bash
-certbot renew --quiet
-EOF
-sudo chmod +x /etc/cron.monthly/certbot
 ```
 
 ## Cloud Deployment
 
-### AWS Deployment
-
-#### Using Elastic Beanstalk
+### AWS (Elastic Beanstalk)
 
 ```bash
-# Install EB CLI
 pip install awsebcli
-
-# Initialize EB
-eb init -p python-3.10 webis-platform
-
-# Create environment
-eb create webis-prod -c webis-prod
-
-# Deploy
+eb init -p python-3.10 webis
+eb create webis-prod
 eb deploy
 ```
 
-#### Using EKS
+### GCP (Cloud Run)
+
+```bash
+gcloud builds submit --tag gcr.io/PROJECT/webis
+gcloud run deploy webis \
+  --image gcr.io/PROJECT/webis \
+  --platform managed \
+  --set-env-vars WEBIS_ENV=production
+```
+
+### Kubernetes
 
 ```yaml
-# deployment.yaml
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: webis-api
+  name: webis
 spec:
-  replicas: 3
+  replicas: 2
   selector:
     matchLabels:
-      app: webis-api
+      app: webis
   template:
     metadata:
       labels:
-        app: webis-api
+        app: webis
     spec:
       containers:
-      - name: webis-api
+      - name: webis
         image: webis/webis:latest
         ports:
         - containerPort: 8000
-        env:
-        - name: WEBIS_ENV
-          value: "production"
-        - name: DATABASE_URL
-          valueFrom:
-            secretKeyRef:
-              name: webis-db-secret
-              key: url
+        envFrom:
+        - secretRef:
+            name: webis-secrets
         resources:
           requests:
-            memory: "512Mi"
-            cpu: "250m"
-          limits:
             memory: "1Gi"
             cpu: "500m"
----
-# service.yaml
-apiVersion: v1
-kind: Service
-metadata:
-  name: webis-service
-spec:
-  selector:
-    app: webis-api
-  ports:
-  - protocol: TCP
-    port: 80
-    targetPort: 8000
-  type: LoadBalancer
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
 ```
 
-### GCP Deployment
+See `k8s/hpa.yaml` for auto-scaling configuration.
 
-#### Cloud Run
+## Monitoring & Logging
+
+### Logging
+
+Webis uses Python's `logging` module. Configure via environment:
+
+```env
+LOG_LEVEL=INFO    # DEBUG, INFO, WARNING, ERROR
+DEBUG=false       # Enable debug mode
+```
+
+Log output goes to stderr by default. For file logging, configure in your
+deployment:
 
 ```bash
-# Build and deploy
-gcloud builds submit --tag gcr.io/PROJECT-ID/webis
-gcloud run deploy webis \
-  --image gcr.io/PROJECT-ID/webis \
-  --platform managed \
-  --region us-central1 \
-  --set-env-vars=WEBIS_ENV=production
+webis run "task" 2>&1 | tee -a /var/log/webis/pipeline.log
 ```
 
-#### GKE
+### LLM Usage Tracking
 
-```bash
-# Create cluster
-gcloud container clusters create webis-cluster \
-  --num-nodes=3 \
-  --zone us-central1-a
+The `LLMRouter` automatically tracks:
+- Total tokens consumed
+- Cost per model (USD)
+- Cache hit rate
 
-# Apply manifests
-kubectl apply -f deployment.yaml
-kubectl apply -f service.yaml
-```
-
-## Monitoring and Logging
-
-### Application Monitoring
+Access programmatically:
 
 ```python
-# src/webis/core/monitoring.py
-import prometheus_client
-from prometheus_client import Counter, Histogram, Gauge
+from webis.core.llm.base import get_default_router
 
-# Metrics
-REQUEST_COUNT = Counter(
-    'webis_requests_total',
-    'Total number of requests',
-    ['method', 'endpoint']
-)
-
-REQUEST_DURATION = Histogram(
-    'webis_request_duration_seconds',
-    'Request duration'
-)
-
-ACTIVE_JOBS = Gauge(
-    'webis_active_jobs',
-    'Number of active background jobs'
-)
-
-class MonitoringMiddleware:
-    def __init__(self, app):
-        self.app = app
-        prometheus_client.start_http_server(8001)
-
-    def __call__(self, environ, start_response):
-        REQUEST_COUNT.inc(environ['REQUEST_METHOD'], environ['PATH_INFO'])
-
-        with REQUEST_DURATION.time():
-            return self.app(environ, start_response)
-```
-
-### Logging Configuration
-
-```python
-# src/webis/core/logging.py
-import logging
-import sys
-from logging.handlers import RotatingFileHandler
-
-def setup_logging():
-    # Create logger
-    logger = logging.getLogger('webis')
-    logger.setLevel(logging.INFO)
-
-    # Console handler
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(logging.INFO)
-
-    # File handler
-    file_handler = RotatingFileHandler(
-        'logs/webis.log',
-        maxBytes=10*1024*1024,  # 10MB
-        backupCount=5
-    )
-    file_handler.setLevel(logging.DEBUG)
-
-    # Formatter
-    formatter = logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
-    console_handler.setFormatter(formatter)
-    file_handler.setFormatter(formatter)
-
-    # Add handlers
-    logger.addHandler(console_handler)
-    logger.addHandler(file_handler)
-
-    return logger
+router = get_default_router()
+stats = router.get_stats()
+print(f"Total tokens: {stats['total_tokens']}")
+print(f"Total cost: ${stats['total_cost_usd']:.4f}")
 ```
 
 ### Health Checks
 
-```python
-# src/webis/core/health.py
-from fastapi import FastAPI
-from fastapi.responses import JSONResponse
+```bash
+# Verify CLI works
+webis --help
 
-app = FastAPI()
+# Verify search plugins
+python -c "from webis.core.plugin import get_default_registry; r = get_default_registry(); print(r.list_sources())"
 
-@app.get("/health")
-async def health_check():
-    return JSONResponse(
-        content={
-            "status": "healthy",
-            "version": "2.0.0-alpha.1",
-            "timestamp": datetime.utcnow().isoformat()
-        }
-    )
-
-@app.get("/health/detailed")
-async def detailed_health_check():
-    # Check database
-    db_ok = await check_database()
-
-    # Check Redis
-    redis_ok = await check_redis()
-
-    # Check external APIs
-    api_ok = await check_external_apis()
-
-    overall = db_ok and redis_ok and api_ok
-
-    return JSONResponse(
-        content={
-            "status": "healthy" if overall else "unhealthy",
-            "checks": {
-                "database": db_ok,
-                "redis": redis_ok,
-                "external_apis": api_ok
-            }
-        }
-    )
+# Verify LLM connectivity
+python -c "
+from webis.core.llm.base import get_default_router
+r = get_default_router()
+resp = r.chat([{'role': 'user', 'content': 'Say hello'}], max_tokens=10)
+print(resp.content)
+"
 ```
 
-## Scaling and Performance
+## Scaling
 
-### Horizontal Scaling
+### Key Bottlenecks
 
-```python
-# Scale with Kubernetes HPA
-apiVersion: autoscaling/v2
-kind: HorizontalPodAutoscaler
-metadata:
-  name: webis-api-hpa
-spec:
-  scaleTargetRef:
-    apiVersion: apps/v1
-    kind: Deployment
-    name: webis-api
-  minReplicas: 3
-  maxReplicas: 10
-  metrics:
-  - type: Resource
-    resource:
-      name: cpu
-      target:
-        type: Utilization
-        averageUtilization: 70
-  - type: Resource
-    resource:
-      name: memory
-      target:
-        type: Utilization
-        averageUtilization: 80
-```
+| Component | Bottleneck | Mitigation |
+|-----------|-----------|------------|
+| LLM API calls | Rate limits, latency | Use fallback chain, caching |
+| Web crawling | Network I/O | Parallel source plugins |
+| Embedding generation | CPU/GPU | Pre-cache models, batch processing |
+| Report generation | LLM token limits | Hybrid rendering approach |
 
-### Caching Strategy
+### Performance Tips
 
-```python
-# Redis caching
-import redis
-from functools import wraps
+1. **Pre-download embedding model** to avoid first-run latency:
+   ```bash
+   python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
+   ```
 
-redis_client = redis.Redis(host='redis', port=6379, db=0)
+2. **Use `WEBIS_LLM_MODEL`** to select a fast model for development:
+   ```env
+   WEBIS_LLM_MODEL=qwen-coder-32b
+   ```
 
-def cache_result(expire=3600):
-    def decorator(func):
-        @wraps(func)
-        async def wrapper(*args, **kwargs):
-            # Generate cache key
-            key = f"{func.__name__}:{hash(str(args) + str(kwargs))}"
+3. **Set offline mode** for air-gapped environments:
+   ```env
+   HF_HUB_OFFLINE=1
+   TRANSFORMERS_OFFLINE=1
+   ```
 
-            # Try to get from cache
-            cached = redis_client.get(key)
-            if cached:
-                return json.loads(cached)
-
-            # Execute function
-            result = await func(*args, **kwargs)
-
-            # Cache result
-            redis_client.setex(key, expire, json.dumps(result))
-
-            return result
-        return wrapper
-    return decorator
-```
-
-### Database Optimization
-
-```python
-# Database indexes
-async def create_indexes():
-    # Create indexes for performance
-    await create_index("documents", "source_plugin")
-    await create_index("documents", "created_at")
-    await create_index("documents", "url")
-    await create_index("documents", "content_hash")
-
-    # Vector search indexes
-    await create_vector_index("embeddings", "vector")
-```
+4. **Lower `--limit`** for faster iteration during development.
 
 ---
 
 For more information:
-- [API Reference](api.md) - Complete API documentation
-- [User Guide](user-guide.md) - Complete feature walkthrough
-- [Quick Start](quickstart.md) - Get started in 5 minutes
+- [Docker Usage](docker-usage.md) — Detailed Docker guide
+- [API Reference](api.md) — Core classes and CLI reference
+- [Quick Start](quickstart.md) — Get started in 5 minutes

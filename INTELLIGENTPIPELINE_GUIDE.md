@@ -42,7 +42,7 @@
         │  (数据源注册)       │
         │                    │
         └─ SourcePlugins    │
-           (DuckDuckGo,      │
+              (Tavily/Bocha,    │
             GitHub,GNews等)  │
 ```
 
@@ -132,7 +132,7 @@ raw_docs = crawler_agent.run(
 ```
 
 **CrawlerAgent 内部流程：**
-1. 获取所有可用数据源插件 (DuckDuckGo, GitHub, GNews等)
+1. 获取所有可用数据源插件 (Tavily、Bocha、GitHub、GNews等)
 2. 过滤已排除的工具
 3. 构建提示词，让LLM选择最佳工具：
    ```
@@ -274,7 +274,7 @@ def run(task, limit, context, excluded_tools):
 ```
 
 **降级策略：**
-- 如果LLM选择失败，使用默认工具列表：DuckDuckGo → Google → Baidu
+- 如果LLM选择失败，使用默认工具列表：Tavily → Bocha → 其他备用搜索源
 - 如果工具执行失败，标记为 failed_tool，下次迭代跳过
 
 ### 3. ValidationAgent (验证代理)
@@ -380,7 +380,7 @@ class AgentState:
 ### 数据流转路径
 
 ```
-数据源插件 (DuckDuckGo/GitHub等)
+数据源插件 (Tavily/GitHub等)
     │
     ├─ 返回: WebisDocument (仅content + meta)
     │
@@ -549,7 +549,7 @@ crawl_limit = shortage + 5
 # LLM不是随机选择，而是根据任务性质
 # - 代码相关 → GitHub优先
 # - 新闻相关 → GNews优先
-# - 通用查询 → DuckDuckGo优先
+# - 通用查询 → Tavily/Bocha优先
 ```
 
 ### 4. 严格的错误处理

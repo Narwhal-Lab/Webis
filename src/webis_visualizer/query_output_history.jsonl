@@ -1,4 +1,0 @@
-{"timestamp": "2026-02-09T18:01:18", "query": "量子计算最新进展", "limit": 5, "status": "completed", "output_dir": "/Users/easonnoway/PKU/Webis/Webis_v4/webis-dev/output/20260128_171434"}
-{"timestamp": "2026-02-09T20:25:29", "query": "量子计算最新进展", "limit": 5, "status": "completed", "output_dir": "/Users/easonnoway/PKU/Webis/Webis_v4/webis-dev/output/20260209_202503"}
-{"timestamp": "2026-02-23T16:58:54", "query": "find the news about golden market", "limit": 3, "status": "failed", "output_dir": null, "error": "no_output_directory_generated"}
-{"timestamp": "2026-02-23T17:10:42", "query": "find news about gold market", "limit": 5, "status": "completed", "output_dir": "/Users/wangkairui/项目代码/webis-dev/output/20260223_170855"}

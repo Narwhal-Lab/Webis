@@ -139,6 +139,42 @@ BUILTIN_MODELS: Dict[str, ModelConfig] = {
         context_window=32000,
         supports_json_mode=True,
     ),
+    "glm-5-pro": ModelConfig(
+        name="Pro/zai-org/GLM-5",
+        provider="siliconflow",
+        api_key_env="SILICONFLOW_API_KEY",
+        base_url_env="SILICONFLOW_BASE_URL",
+        # Keep the user-requested endpoint path; provider will normalize it.
+        base_url="https://api.siliconflow.cn/v1/chat/completions",
+        cost_per_1m_input=0.0,
+        cost_per_1m_output=0.0,
+        context_window=128000,
+        supports_json_mode=True,
+    ),
+    "kimi-k2.5": ModelConfig(
+        name="kimi-k2.5",
+        provider="moonshot",
+        api_key_env="MOONSHOT_API_KEY",
+        base_url_env="MOONSHOT_BASE_URL",
+        base_url="https://api.moonshot.cn/v1",
+        temperature=1.0,
+        top_p=0.95,
+        cost_per_1m_input=0.0,
+        cost_per_1m_output=0.0,
+        context_window=128000,
+        supports_json_mode=True,
+    ),
+    "minimax-m2.5": ModelConfig(
+        name="Pro/MiniMaxAI/MiniMax-M2.5",
+        provider="siliconflow",
+        api_key_env="SILICONFLOW_API_KEY",
+        base_url_env="SILICONFLOW_BASE_URL",
+        base_url="https://api.siliconflow.cn/v1/chat/completions",
+        cost_per_1m_input=0.0,
+        cost_per_1m_output=0.0,
+        context_window=128000,
+        supports_json_mode=True,
+    ),
     "gpt-4o": ModelConfig(
         name="gpt-4o",
         provider="openai",
@@ -158,16 +194,33 @@ BUILTIN_MODELS: Dict[str, ModelConfig] = {
         context_window=128000,
         supports_json_mode=True,
     ),
-    "claude-sonnet": ModelConfig(
-        name="claude-sonnet-4-20250514",
-        provider="anthropic",
-        api_key_env="ANTHROPIC_API_KEY",
-        cost_per_1m_input=3.0,
-        cost_per_1m_output=15.0,
-        context_window=200000,
+    "gpt-5.2-chat": ModelConfig(
+        name="gpt-5.2-chat",
+        provider="openai",
+        api_key_env="ZHOULIU_API_KEY",
+        base_url="https://zhouliuai.online/v1/chat/completions",
+        cost_per_1m_input=0.0,
+        cost_per_1m_output=0.0,
+        context_window=100000,
+        supports_json_mode=True,
         supports_vision=True,
     ),
 }
+
+# The free fallback model used when the user-selected model fails.
+# SiliconFlow Qwen2.5-7B-Instruct is free-tier and always available.
+FREE_FALLBACK_MODEL_KEY = "qwen2.5-7b-free"
+FREE_FALLBACK_CONFIG = ModelConfig(
+    name="Qwen/Qwen2.5-7B-Instruct",
+    provider="siliconflow",
+    api_key_env="SILICONFLOW_API_KEY",
+    base_url_env="SILICONFLOW_BASE_URL",
+    base_url="https://api.siliconflow.cn/v1",
+    cost_per_1m_input=0.0,
+    cost_per_1m_output=0.0,
+    context_window=32768,
+    supports_json_mode=True,
+)
 
 
 class LLMProvider(ABC):
@@ -207,6 +260,13 @@ class OpenAICompatibleProvider(LLMProvider):
             env_url = os.getenv(model_config.base_url_env)
             if env_url:
                 base_url = env_url
+
+        # Normalize OpenAI-compatible base URLs if a full endpoint path is provided.
+        # The OpenAI SDK appends /chat/completions internally, so we keep only the API root.
+        if isinstance(base_url, str):
+            lowered = base_url.lower().rstrip("/")
+            if lowered.endswith("/chat/completions"):
+                base_url = base_url[: -len("/chat/completions")]
         
         client = OpenAI(
             api_key=api_key,
@@ -214,14 +274,21 @@ class OpenAICompatibleProvider(LLMProvider):
         )
         
         start_time = time.time()
-        
-        response = client.chat.completions.create(
-            model=model_config.name,
-            messages=messages,
-            temperature=kwargs.get("temperature", model_config.temperature),
-            max_tokens=kwargs.get("max_tokens", model_config.max_tokens),
-            top_p=kwargs.get("top_p", model_config.top_p),
-        )
+
+        request_temperature = kwargs.get("temperature", model_config.temperature)
+        request_top_p = kwargs.get("top_p", model_config.top_p)
+
+        request_payload = {
+            "model": model_config.name,
+            "messages": messages,
+            "temperature": request_temperature,
+            "max_tokens": kwargs.get("max_tokens", model_config.max_tokens),
+            "top_p": request_top_p,
+        }
+        if kwargs.get("supports_json_mode", False):
+            request_payload["response_format"] = {"type": "json_object"}
+
+        response = client.chat.completions.create(**request_payload)
         
         latency = (time.time() - start_time) * 1000
         
@@ -296,6 +363,9 @@ class LLMRouter:
         
         self._providers: Dict[str, LLMProvider] = {
             "openai": OpenAICompatibleProvider(),
+            "claude": OpenAICompatibleProvider(),
+            "anthropic": OpenAICompatibleProvider(),
+            "moonshot": OpenAICompatibleProvider(),
             "siliconflow": OpenAICompatibleProvider(),
             "deepseek": OpenAICompatibleProvider(),
         }
@@ -365,8 +435,7 @@ class LLMRouter:
         
         # Try primary model, then fallbacks
         models_to_try = [model_name] + [m for m in self._fallback_chain if m != model_name]
-
-        print(models_to_try)
+        logger.debug("Models to try: %s", models_to_try)
         
         last_error = None
         for try_model in models_to_try:
@@ -389,8 +458,7 @@ class LLMRouter:
                 # Cache the response
                 if use_cache and self._cache:
                     self._cache.set(messages, try_model, response)
-
-                print("success try model: ", try_model)
+                logger.debug("Model success: %s", try_model)
                 
                 return response
                 
@@ -419,13 +487,41 @@ _default_router: Optional[LLMRouter] = None
 
 
 def get_default_router() -> LLMRouter:
-    """Get the default LLM router with common models configured."""
+    """Get the default LLM router with common models configured.
+
+    Model selection priority:
+    1. ``WEBIS_LLM_MODEL`` env var — uses *only* that model as primary,
+       with the free SiliconFlow Qwen2.5-7B as sole fallback.
+    2. ``CUSTOM_API_KEY`` env var — uses the custom model as primary.
+    3. Auto-select by capability score from BUILTIN_MODELS.
+    """
     global _default_router
     if _default_router is None:
         _default_router = LLMRouter()
-        
-        if _has_real_env_value("CUSTOM_API_KEY"):
-            # Add custom model dynamically
+
+        explicit_model = os.environ.get("WEBIS_LLM_MODEL", "").strip()
+        explicit_alias_map = {
+            "Pro/zai-org/GLM-5": "glm-5-pro",
+            "kimi-k2-5": "kimi-k2.5",
+            "Kimi-K2.5": "kimi-k2.5",
+        }
+        if explicit_model in explicit_alias_map:
+            explicit_model = explicit_alias_map[explicit_model]
+
+        if explicit_model and explicit_model in BUILTIN_MODELS:
+            # ------- User explicitly chose a model via the UI -------
+            _default_router.add_model(explicit_model, primary=True)
+            # Always register the free fallback so there is a safety net.
+            _default_router.add_model(
+                FREE_FALLBACK_MODEL_KEY,
+                config=FREE_FALLBACK_CONFIG,
+                fallback=True,
+            )
+            logger.info(
+                "Explicit model selected: primary=%s, free-fallback=%s",
+                explicit_model, FREE_FALLBACK_MODEL_KEY,
+            )
+        elif _has_real_env_value("CUSTOM_API_KEY"):
             custom_name = os.environ.get("CUSTOM_MODEL_NAME", "custom-model")
             custom_config = ModelConfig(
                 name=custom_name,
@@ -438,23 +534,24 @@ def get_default_router() -> LLMRouter:
                 context_window=100000,
                 supports_json_mode=True,
             )
-            # Register it
             _default_router.add_model(custom_name, config=custom_config, primary=True)
             logger.info(f"Using Custom LLM: {custom_name}")
         else:
-            # Auto-select providers by available non-placeholder API keys.
-            # Priority: SiliconFlow -> DeepSeek -> OpenAI -> Anthropic
-            candidate_order = [
-                "qwen-coder-32b",
-                "deepseek-v3.2",
-                "gpt-4o-mini",
-                "claude-sonnet",
-            ]
-            available_models = [
-                model_name
-                for model_name in candidate_order
-                if _has_real_env_value(BUILTIN_MODELS[model_name].api_key_env)
-            ]
+            # Auto-select models dynamically by capability score, only with valid API keys.
+            scored_models: List[tuple[float, str]] = []
+            for model_name, cfg in BUILTIN_MODELS.items():
+                if cfg.api_key_env and not _has_real_env_value(cfg.api_key_env):
+                    continue
+                score = float(cfg.context_window)
+                if cfg.supports_json_mode:
+                    score += 60000.0
+                if cfg.supports_vision:
+                    score += 10000.0
+                score -= float(cfg.cost_per_1m_input + cfg.cost_per_1m_output) * 2000.0
+                scored_models.append((score, model_name))
+
+            scored_models.sort(key=lambda x: x[0], reverse=True)
+            available_models = [model_name for _, model_name in scored_models]
 
             if available_models:
                 _default_router.add_model(available_models[0], primary=True)
@@ -466,24 +563,44 @@ def get_default_router() -> LLMRouter:
                     available_models[1:],
                 )
             else:
-                # Keep backward-compatible defaults when no valid key is found.
-                _default_router.add_model("deepseek-v3.2", primary=True)
-                _default_router.add_model("gpt-4o-mini", fallback=True)
                 logger.warning(
-                    "No valid LLM API keys detected. Using legacy default chain: "
-                    "deepseek-v3.2 -> gpt-4o-mini"
+                    "No valid LLM API keys detected. Router has no active models; please configure API keys."
                 )
             
     return _default_router
+
+
+def reset_default_router() -> None:
+    """Force re-initialisation of the singleton router.
+
+    Call this after changing ``WEBIS_LLM_MODEL`` or API-key env vars so
+    that the next ``get_default_router()`` picks up new settings.
+    """
+    global _default_router
+    _default_router = None
+
+
+def list_registered_models() -> Dict[str, ModelConfig]:
+    """Return all models from BUILTIN_MODELS.
+
+    This is used by the visualiser to populate the model selector
+    dropdown.  It returns *all* registered models regardless of
+    whether their API key is currently configured.
+    """
+    return dict(BUILTIN_MODELS)
 
 
 __all__ = [
     "LLMResponse",
     "ModelConfig",
     "BUILTIN_MODELS",
+    "FREE_FALLBACK_MODEL_KEY",
+    "FREE_FALLBACK_CONFIG",
     "LLMProvider",
     "OpenAICompatibleProvider",
     "ResponseCache",
     "LLMRouter",
     "get_default_router",
+    "reset_default_router",
+    "list_registered_models",
 ]

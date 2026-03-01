@@ -14,6 +14,7 @@ from webis.core.agent.crawler_agent import CrawlerAgent
 from webis.core.agent.validation_agent import ValidationAgent, AgentState
 from webis.core.schema import WebisDocument, PipelineContext
 from webis.plugins.processors.html_cleaner_plugin import HTMLCleanerPlugin
+from webis.plugins.processors.html_fetcher_plugin import HtmlFetcherPlugin
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,7 @@ class IntelligentPipeline:
         self.crawler_agent = crawler_agent or CrawlerAgent()
         self.validation_agent = validation_agent or ValidationAgent()
         self.html_cleaner = HTMLCleanerPlugin()
+        self.html_fetcher = HtmlFetcherPlugin()
         
     def run(
         self,
@@ -109,31 +111,19 @@ class IntelligentPipeline:
             crawl_limit = shortage + 5  # Get a few extra to account for rejections
             print(f"📥 Crawling {crawl_limit} documents...")
             
-            # Exclude tools that were used in the previous iteration
-            # to diversify data sources across iterations
-            excluded_tools = state.used_tools_previous_iteration if iteration > 0 else []
-            if excluded_tools:
-                print(f"   Excluding tools used in previous iteration: {excluded_tools}")
-
+            # URL-level dedup already prevents wasted LLM calls on duplicate
+            # URLs, so we no longer exclude working tools between iterations.
+            # Instead we pass seen_urls and the iteration number so the crawler
+            # can vary its queries on subsequent rounds.
             raw_docs = self.crawler_agent.run(
                 task=query,
                 limit=crawl_limit,
                 context=context,
-                excluded_tools=excluded_tools
+                exclude_urls=state.seen_urls,
+                iteration=iteration,
             )
 
-            # If exclusion strategy yields nothing, retry once in the same iteration
-            # without exclusions to avoid an empty round.
             tools_used_this_iteration = self.crawler_agent.last_used_tools
-            if not raw_docs and excluded_tools:
-                print("   No documents fetched with exclusions. Retrying once without exclusions...")
-                raw_docs = self.crawler_agent.run(
-                    task=query,
-                    limit=crawl_limit,
-                    context=context,
-                    excluded_tools=[]
-                )
-                tools_used_this_iteration = self.crawler_agent.last_used_tools
 
             print(f"   Tools used in this iteration: {tools_used_this_iteration}")
 
@@ -148,9 +138,6 @@ class IntelligentPipeline:
             else:
                 print(f"   Fetched {len(raw_docs)} raw documents from: {successful_tools}")
             
-            # Only exclude tools that actually returned documents, otherwise we risk empty rounds.
-            state.used_tools_previous_iteration = sorted(successful_tools)
-            
             # Step 3: Clean documents
             print(f"🧹 Cleaning {len(raw_docs)} documents...")
             # print(raw_docs)
@@ -160,8 +147,10 @@ class IntelligentPipeline:
             # Step 4: Validate relevance
             print(f"🔍 Validating relevance...")
             for doc in cleaned_docs:
-                # Skip if already validated
-                if doc in state.current_docs or doc in state.rejected_docs:
+                # Skip if this URL was already seen (accepted or rejected)
+                if state.is_url_seen(doc):
+                    url = doc.meta.url if doc.meta else doc.id
+                    print(f"   ⏭️  Skipping already-seen URL: {url}")
                     continue
                 
                 is_relevant, score, reason = self.validation_agent.check_relevance(
@@ -213,11 +202,24 @@ class IntelligentPipeline:
         documents: List[WebisDocument],
         context: Optional[PipelineContext] = None
     ) -> List[WebisDocument]:
-        """Clean documents using HTML cleaner plugin."""
+        """Clean documents using HTML cleaner plugin.
+
+        If a document looks like a short search-engine snippet (< 500 chars and
+        no real HTML tags), we first try to fetch the full HTML from the URL so
+        the cleaner has something substantial to work with.
+        """
         cleaned = []
         
         for doc in documents:
             try:
+                # If content is tiny / snippet-only, try to fetch the real page
+                content_len = len(doc.content) if doc.content else 0
+                has_html_tags = doc.content and ("<html" in doc.content.lower() or "<body" in doc.content.lower() or "<div" in doc.content.lower())
+                if content_len < 500 and not has_html_tags and doc.meta and doc.meta.url:
+                    url = doc.meta.url
+                    print(f"   \U0001f310 Fetching full page for snippet-only doc: {url}")
+                    doc = self.html_fetcher.process(doc, context) or doc
+
                 cleaned_doc = self.html_cleaner.process(doc, context)
                 if cleaned_doc and cleaned_doc.clean_content:
                     cleaned.append(cleaned_doc)
@@ -229,4 +231,5 @@ class IntelligentPipeline:
                 print(f"❌ Cleaning error for {url}: {e}")
                 continue
         
+        logger.info(f"Cleaned {len(cleaned)}/{len(documents)} documents")
         return cleaned

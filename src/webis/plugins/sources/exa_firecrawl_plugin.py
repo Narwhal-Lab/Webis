@@ -3,6 +3,8 @@ import os
 import requests
 import time
 from typing import Any, Dict, Iterator, List, Optional, Union
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from webis.core.plugin import SourcePlugin, PluginMetadata
 from webis.core.schema import WebisDocument, DocumentType, DocumentMetadata
@@ -29,6 +31,21 @@ class ExaFirecrawlCrawler(SourcePlugin):
         self.firecrawl_mcp_url = os.environ.get("FIRECRAWL_MCP_URL")
         self.exa_token = os.environ.get("EXA_API_KEY")
         self.firecrawl_token = os.environ.get("FIRECRAWL_API_KEY")
+        self.session = self._build_session()
+
+    def _build_session(self) -> requests.Session:
+        session = requests.Session()
+        retry = Retry(
+            total=2,
+            backoff_factor=0.5,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["POST"],
+            raise_on_status=False,
+        )
+        adapter = HTTPAdapter(max_retries=retry)
+        session.mount("https://", adapter)
+        session.mount("http://", adapter)
+        return session
 
     def fetch(self, query: str, limit: int = 10, context: Any = None, **kwargs) -> Iterator[WebisDocument]:
         """
@@ -114,10 +131,10 @@ class ExaFirecrawlCrawler(SourcePlugin):
         if url:
             try:
                 return self._call_mcp_rpc(url, token, tool_name, args)
-            except requests.exceptions.ConnectionError:
+            except requests.exceptions.RequestException as exc:
                 if not token:
-                    raise # Cannot fallback without token
-                logger.warning(f"[{self.name}] MCP connection failed at {url}. Falling back to Direct Cloud API.")
+                    raise
+                logger.warning(f"[{self.name}] MCP call failed at {url} ({exc}). Falling back to Direct Cloud API.")
         
         if token:
             if tool_name == "search": # Exa
@@ -138,7 +155,7 @@ class ExaFirecrawlCrawler(SourcePlugin):
             "method": "tools/call",
             "params": {"name": tool_name, "arguments": args}
         }
-        resp = requests.post(url, json=payload, headers=headers, timeout=30)
+        resp = self.session.post(url, json=payload, headers=headers, timeout=30)
         resp.raise_for_status()
         data = resp.json()
         if "error" in data:
@@ -166,7 +183,7 @@ class ExaFirecrawlCrawler(SourcePlugin):
             "numResults": args.get("numResults", 10),
             "useAutoprompt": True
         }
-        resp = requests.post(url, headers=headers, json=payload, timeout=30)
+        resp = self.session.post(url, headers=headers, json=payload, timeout=30)
         resp.raise_for_status()
         return resp.json()
 
@@ -181,7 +198,7 @@ class ExaFirecrawlCrawler(SourcePlugin):
             "url": args.get("url"),
             "formats": ["markdown"]
         }
-        resp = requests.post(url, headers=headers, json=payload, timeout=60)
+        resp = self.session.post(url, headers=headers, json=payload, timeout=60)
         resp.raise_for_status()
         data = resp.json()
         if not data.get("success"):

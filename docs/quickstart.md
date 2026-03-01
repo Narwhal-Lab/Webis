@@ -1,156 +1,160 @@
 # Quick Start Guide
 
-Welcome to Webis! This guide will help you get started in just 5 minutes.
+Welcome to Webis v2! This guide will get you running in 5 minutes.
 
 ## 🎯 What You'll Learn
 
-- Installing Webis
-- Running your first pipeline
-- Using the web interface
-- Your first results
+- Installing Webis via conda
+- Running an intelligent crawl pipeline
+- Generating HTML / Markdown reports from RAG knowledge bases
+- Launching the Streamlit visualizer
 
 ## 🚀 Installation
 
-### Option 1: One-Command Setup (Recommended)
+### Option 1: Conda Setup (Recommended)
 
 ```bash
-# Run the setup script
+git clone https://github.com/Narwhal-Lab/Webis.git
+cd webis
 bash setup/conda_setup.sh
 ```
 
-This script will:
-- Create a new conda environment
-- Install Webis
-- Download necessary models
-- Set up configuration
+The script creates a `webis` conda environment (Python 3.10), installs all
+dependencies from `setup/requirements.txt`, and registers the `webis` CLI via
+`pip install -e .`.
 
-### Option 2: Manual Installation
+### Option 2: uv Setup
 
 ```bash
-# Clone and install
+bash setup/uv_setup.sh
+```
+
+### Option 3: Manual Installation
+
+```bash
 git clone https://github.com/Narwhal-Lab/Webis.git
 cd webis
 pip install -e .
 ```
 
+## ⚙️ Configuration
+
+Copy the environment template and fill in your API keys:
+
+```bash
+cp .env.example .env
+```
+
+**Minimum required keys** (at least one LLM + one search):
+
+```env
+# LLM Provider (pick one or more)
+DEEPSEEK_API_KEY=your_deepseek_key
+SILICONFLOW_API_KEY=your_siliconflow_key
+# OPENAI_API_KEY=your_openai_key
+
+# Search API (pick one or more)
+TAVILY_API_KEY=your_tavily_key
+BOCHA_API_KEY=your_bocha_key
+# EXA_API_KEY=your_exa_key
+```
+
+You can override the default LLM with:
+
+```env
+WEBIS_LLM_MODEL=deepseek-v3.2   # or gpt-4o, claude-sonnet, qwen-coder-32b, etc.
+```
+
 ## ⚡ First Pipeline
 
-### 1. Simple Web Data Collection
-
-Let's get the latest AI news:
+### 1. Run an Intelligent Crawl
 
 ```bash
 webis run "Latest artificial intelligence news" --limit 5
 ```
 
-This command will:
-- Search the web for AI news
-- Extract and clean content
-- Save results to `./output/timestamp/result.json`
+This triggers the **Intelligent Pipeline**:
+
+1. **CrawlerAgent** — LLM selects the best search plugins (Tavily, Bocha,
+   Exa, Serper, BrightData, …), executes queries with automatic variation per
+   iteration.
+2. **HTML Clean** — Raw pages are cleaned via `HTMLCleanerPlugin`; snippet-only
+   results are auto-fetched for full content.
+3. **ValidationAgent** — Each document is scored by the LLM for relevance;
+   duplicates are filtered by URL.
+4. **Loop** — Steps 1–3 repeat (up to 3 iterations) until enough quality
+   documents are collected.
+5. **LLM Extraction** — Structured data is extracted via `LLMExtractorPlugin`.
+6. **RAG Knowledge Base** — Documents are embedded
+   (`sentence-transformers/all-MiniLM-L6-v2`) and stored as
+   `rag_store.json`.
+
+Results are saved to `./output/<timestamp>/`.
 
 ### 2. Check Your Results
 
 ```bash
-# View the structured results
-cat ./output/timestamp/result.json | head -50
+ls ./output/<timestamp>/
+# result.json        — structured extraction results
+# rag_store.json     — RAG knowledge base (embeddings + documents)
+# documents.json     — raw collected documents
 ```
 
-```json
-[
-  {
-    "title": "OpenAI Announces New GPT-5 Model",
-    "url": "https://example.com/openai-gpt5",
-    "content": "OpenAI announced their latest model...",
-    "published_at": "2024-01-15",
-    "source": "TechCrunch"
-  }
-]
+### 3. Generate an HTML Report
+
+```bash
+webis html-report ./output/<timestamp>/rag_store.json \
+  --query "Latest artificial intelligence news"
+```
+
+This runs the **3-Agent Report Pipeline**:
+
+| Agent | Role |
+|-------|------|
+| **RAGRetrievalAgent** | Ranks documents, generates an analysis pack (KPIs, insights, patterns, risks) |
+| **TemplateDesignAgent** | Designs a topic-adaptive CSS theme and presentation layout |
+| **ReportAssemblyAgent** | Assembles a standalone HTML5 report via hybrid LLM + deterministic rendering |
+
+Output: `./output/<timestamp>/report.html`
+
+### 4. Generate a Markdown Report
+
+```bash
+webis markdown-report ./output/<timestamp>/rag_store.json \
+  --query "Latest artificial intelligence news"
 ```
 
 ## 🖥️ Web Interface
 
-Launch the visualizer:
+Launch the Streamlit visualizer:
 
 ```bash
 webis visualizer
 ```
 
-Open your browser to `http://localhost:8501`
+Open `http://localhost:8501` in your browser.
 
-### Basic Workflow:
+### Basic Workflow
 
-1. **Add Data Sources**
-   - Click "Add Data Source" in the sidebar
-   - Choose web crawling or file upload
-   - Enter your query (e.g., "AI news")
+1. **Enter a task** — natural language description of what you want to research
+2. **Run Pipeline** — watch real-time progress as agents crawl, clean, and validate
+3. **Review Results** — browse collected documents, view KPIs, export data
+4. **Generate Report** — click to generate an HTML intelligence report
 
-2. **Run Pipeline**
-   - Click "Run Pipeline"
-   - Watch the progress
-   - See real-time updates
-
-3. **Review Results**
-   - Switch between tabs for different views
-   - Export data in various formats
-   - Use the AI Assistant for analysis
-
-## 📄 Process Local Files
-
-Extract information from a PDF:
+## 📄 Extract from Local Files
 
 ```bash
-# Download a sample PDF (or use your own)
-curl -o sample.pdf https://example.com/sample.pdf
-
-# Extract information
-webis extract sample.pdf --task "Extract key findings and main conclusions"
+webis extract report.pdf \
+  --task "Extract key findings and conclusions" \
+  --schema schema.json
 ```
 
-## 🔧 Configuration
-
-Create a `.env` file for API keys:
-
-```bash
-# Copy the template
-cp .env.example .env
-```
-
-Edit `.env` and add your keys:
-
-```env
-# LLM Provider
-OPENAI_API_KEY=your_openai_key
-ANTHROPIC_API_KEY=your_anthropic_key
-
-# Search APIs
-SERPAPI_API_KEY=your_serpapi_key
-TAVILY_API_KEY=your_tavily_key
-```
+Supports PDF, DOCX, HTML, Markdown, and plain text.
 
 ## 🎯 Next Steps
 
-1. **Try different data sources**
-   ```bash
-   webis run "Python tutorials" --sources github,stackoverflow
-   ```
-
-2. **Build a knowledge base**
-   ```bash
-   webis run "Recent ML papers" --rag-mode --limit 10
-   ```
-
-3. **Explore the examples**
-   ```bash
-   ls examples/
-   ```
-
-## 📚 Need Help?
-
-- [User Guide](user-guide.md) - Complete feature walkthrough
-- [API Reference](api.md) - Full API documentation
-- [Plugin Development](plugins.md) - Create custom plugins
-- [Community](https://github.com/Narwhal-Lab/Webis/discussions) - Get help from the community
-
----
-
-You're ready to explore Webis! Check out the [User Guide](user-guide.md) for a complete walkthrough of all features.
+- [User Guide](user-guide.md) — Complete feature walkthrough
+- [API Reference](api.md) — Core classes and CLI reference
+- [Plugin Development](plugins.md) — Create custom source / processor / extractor plugins
+- [Deployment Guide](deployment.md) — Production setup
+- [Docker Usage](docker-usage.md) — Container-based deployment

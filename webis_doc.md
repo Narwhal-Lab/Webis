@@ -8,7 +8,6 @@ Webis 集成了多种数据获取工具，覆盖新闻、代码、学术和通�
 
 | 数据源组件 | 对应文件 | 描述 | 依赖配置 (环境变量) |
 | :--- | :--- | :--- | :--- |
-| **DuckDuckGo** | `src/webis/plugins/sources/duckduckgo_plugin.py` | DuckDuckGo 搜索并下载完整网页内容。 | 无 |
 | **Hacker News** | `src/webis/plugins/sources/hackernews_plugin.py` | 基于 HN Algolia 搜索并抓取原文内容。 | 无 |
 | **GNews** | `src/webis/plugins/sources/gnews_plugin.py` | Google News 搜索，支持 API + 抓取回退。 | `GNEWS_API_KEY` (可选，启用官方 API) |
 | **SerpApi (Google)** | `src/webis/plugins/sources/serpapi_plugin.py` | SerpApi 搜索 (Google/Bing 等)。 | `SERPAPI_API_KEY` |

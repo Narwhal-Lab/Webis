@@ -95,7 +95,7 @@ class WebAppIntegration:
         """Start a background pipeline task"""
         result = await self.webis.run_pipeline(
             query=query,
-            sources=["duckduckgo", "gnews"],
+            sources=["tavily_search", "gnews"],
             limit=10
         )
         return result.get("task_id")
@@ -402,7 +402,7 @@ async def demonstrate_api_client():
 
     result = await client.run_pipeline(
         query="Latest AI developments",
-        sources=["duckduckgo"],
+        sources=["tavily_search"],
         limit=5
     )
 

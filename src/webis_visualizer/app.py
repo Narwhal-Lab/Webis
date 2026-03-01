@@ -3,11 +3,9 @@ Webis Visualizer - NotebookLM-style interface for Webis pipeline
 """
 
 import streamlit as st
-import streamlit.components.v1 as components
 import os
 import sys
 import json
-import html as html_lib
 import base64
 import textwrap
 import subprocess
@@ -20,218 +18,56 @@ import logging
 sys.path.append(str(Path(__file__).parent.parent.parent))
 
 from webis.core.schema import WebisDocument
-from webis.core.llm.base import get_default_router
+from webis.core.llm import list_registered_models, _has_real_env_value
+from webis_visualizer.styles import get_global_css
 
-try:
-    import markdown as md
-except Exception:
-    md = None
+logger = logging.getLogger(__name__)
+QUERY_HISTORY_FILE = Path(__file__).parent.parent.parent / "output" / "query_history.jsonl"
 
-BASE_DIR = Path(__file__).parent
-QUERY_HISTORY_FILE = BASE_DIR / "query_output_history.jsonl"
-logger = logging.getLogger("webis.visualizer")
+_FAVICON = Path(__file__).parent / "assets" / "webis.svg"
 
-# ------------------------------
-# Configuration
-# ------------------------------
 st.set_page_config(
-    page_title="Webis",
-    page_icon=str(BASE_DIR / "assets" / "webis.svg"),
+    page_title="Webis Visualizer",
+    page_icon=str(_FAVICON) if _FAVICON.exists() else "📊",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
 )
 
-# ------------------------------
-# Session State Initialization
-# ------------------------------
-def init_session_state():
-    """Initialize session state variables"""
-    if "documents" not in st.session_state:
-        st.session_state.documents = []
-    if "structured_result" not in st.session_state:
-        st.session_state.structured_result = None
-    if "chat_history" not in st.session_state:
-        st.session_state.chat_history = []
-    if "pipeline_status" not in st.session_state:
-        st.session_state.pipeline_status = {
-            "fetch": "idle",
-            "clean": "idle",
-            "extract": "idle",
-            "progress": 0
-        }
-    if "active_tab" not in st.session_state:
-        st.session_state.active_tab = "data_source"
-    if "queued_prompt" not in st.session_state:
-        st.session_state.queued_prompt = None
-    if "last_output_dir" not in st.session_state:
-        st.session_state.last_output_dir = None
-    if "selected_output_dir" not in st.session_state:
-        st.session_state.selected_output_dir = None
-    if "output_folder_select" not in st.session_state:
-        st.session_state.output_folder_select = None
-    if "html_report_status" not in st.session_state:
-        st.session_state.html_report_status = "idle"
-    if "html_report_pending" not in st.session_state:
-        st.session_state.html_report_pending = False
-    if "html_report_html" not in st.session_state:
-        st.session_state.html_report_html = None
-    if "html_report_target_dir" not in st.session_state:
-        st.session_state.html_report_target_dir = None
-    if "html_report_last_dir" not in st.session_state:
-        st.session_state.html_report_last_dir = None
-    if "pending_select_dir" not in st.session_state:
-        st.session_state.pending_select_dir = None
-    if "html_report_link" not in st.session_state:
-        st.session_state.html_report_link = None
-    if "markdown_report_status" not in st.session_state:
-        st.session_state.markdown_report_status = "idle"
-    if "markdown_report_pending" not in st.session_state:
-        st.session_state.markdown_report_pending = False
-    if "markdown_report_last_dir" not in st.session_state:
-        st.session_state.markdown_report_last_dir = None
-    if "crawl_proc" not in st.session_state:
-        st.session_state.crawl_proc = None
-    if "crawl_query" not in st.session_state:
-        st.session_state.crawl_query = None
-    if "crawl_limit" not in st.session_state:
-        st.session_state.crawl_limit = None
-    if "crawl_before_dirs" not in st.session_state:
-        st.session_state.crawl_before_dirs = None
-    if "history_compacted" not in st.session_state:
-        st.session_state.history_compacted = False
 
-    # Auto-discover latest output dir with result.json if not set
-    if st.session_state.last_output_dir is None:
-        repo_root = Path(__file__).parent.parent.parent
-        output_root = repo_root / "output"
-        if output_root.exists():
-            candidates = [
-                p for p in output_root.iterdir()
-                if p.is_dir() and (p / "result.json").exists()
-            ]
-            if candidates:
-                latest = max(candidates, key=lambda p: p.stat().st_mtime)
-                st.session_state.last_output_dir = str(latest)
-
-# ------------------------------
-# Helper Functions
-# ------------------------------
-def process_local_file(file):
-    """Process uploaded local files"""
-    from webis.core.schema import DocumentType
-    
-    file_type = file.type.split('/')[-1]
-    
-    # Simple file type detection and processing
-    if file_type in ['pdf', 'application/pdf']:
-        return WebisDocument(
-            id=f"local-pdf-{int(os.urandom(16).hex(), 16)}",
-            content=file.read(),
-            doc_type=DocumentType.PDF,
-            meta={
-                "title": file.name,
-                "source": "local_upload",
-                "size": file.size
-            }
-        )
-    elif file_type in ['text/html', 'application/xhtml+xml']:
-        return WebisDocument(
-            id=f"local-html-{int(os.urandom(16).hex(), 16)}",
-            content=file.read(),
-            doc_type=DocumentType.HTML,
-            meta={
-                "title": file.name,
-                "source": "local_upload",
-                "size": file.size
-            }
-        )
-    elif file_type in ['text/plain', 'text/csv']:
-        return WebisDocument(
-            id=f"local-txt-{int(os.urandom(16).hex(), 16)}",
-            content=file.read(),
-            doc_type=DocumentType.TEXT,
-            meta={
-                "title": file.name,
-                "source": "local_upload",
-                "size": file.size
-            }
-        )
-    else:
-        return WebisDocument(
-            id=f"local-{file_type}-{int(os.urandom(16).hex(), 16)}",
-            content=file.read(),
-            doc_type=DocumentType.UNKNOWN,
-            meta={
-                "title": file.name,
-                "source": "local_upload",
-                "size": file.size
-            }
-        )
-
-# ------------------------------
-# Branding Helpers
-# ------------------------------
-def get_logo_data_uri() -> str:
-    """Return the SVG logo as a data URI for inline rendering."""
-    logo_path = BASE_DIR / "assets" / "webis.svg"
+def _append_query_history_record(
+    query: str,
+    limit: int,
+    output_dir: Path | None,
+    status: str,
+    error: str | None = None,
+) -> None:
     try:
-        svg = logo_path.read_text(encoding="utf-8")
-        svg_b64 = base64.b64encode(svg.encode("utf-8")).decode("utf-8")
-        return f"data:image/svg+xml;base64,{svg_b64}"
+        QUERY_HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        record = {
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "query": query,
+            "limit": limit,
+            "output_dir": str(output_dir) if output_dir else None,
+            "status": status,
+            "error": error,
+        }
+        with QUERY_HISTORY_FILE.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
     except Exception:
-        return ""
-
-# ------------------------------
-# AI Assistant Helpers
-# ------------------------------
-def format_message_html(content: str) -> str:
-    """Render markdown to HTML with a safe fallback."""
-    if md:
-        return md.markdown(content, extensions=["extra"])
-    escaped = html_lib.escape(content).replace("\n", "<br>")
-    return f"<p>{escaped}</p>"
+        logger.exception("Failed to append query history record")
 
 
-def render_chat_history(messages):
-    """Render chat messages as a NotebookLM-style panel."""
-    if not messages:
+def _compact_query_history_file(max_records: int = 3000) -> None:
+    if not QUERY_HISTORY_FILE.exists():
         return
+    try:
+        lines = QUERY_HISTORY_FILE.read_text(encoding="utf-8").splitlines()
+        if len(lines) <= max_records:
+            return
+        QUERY_HISTORY_FILE.write_text("\n".join(lines[-max_records:]) + "\n", encoding="utf-8")
+    except Exception:
+        logger.exception("Failed to compact query history file")
 
-    rows = []
-    for message in messages:
-        role = message.get("role", "assistant")
-        content = message.get("content", "")
-        body_html = format_message_html(content)
-        rows.append(
-            f"<div class=\"chat-bubble {role}\">"
-            f"<div class=\"chat-role\">{role.title()}</div>"
-            f"<div class=\"chat-content\">{body_html}</div>"
-            "</div>"
-        )
-
-    history_html = "<div class=\"chat-surface\">" + "".join(rows) + "</div>"
-    st.markdown(history_html, unsafe_allow_html=True)
-
-
-def run_assistant(prompt: str):
-    """Run assistant response and update chat history."""
-    st.session_state.chat_history.append({"role": "user", "content": prompt})
-    with st.spinner("Thinking..."):
-        try:
-            context = f"""
-Structured data for analysis:
-{json.dumps(st.session_state.structured_result, indent=2)}
-
-User question: {prompt}
-"""
-            router = get_default_router()
-            response = router.chat([
-                {"role": "system", "content": "You are an AI analyst specializing in structured data from the Webis pipeline."},
-                {"role": "user", "content": context}
-            ])
-            st.session_state.chat_history.append({"role": "assistant", "content": response.content})
-        except Exception as e:
-            st.error(f"❌ Failed to generate response: {str(e)}")
 
 def _find_latest_output_dir(output_root: Path) -> Path | None:
     if not output_root.exists():
@@ -241,62 +77,12 @@ def _find_latest_output_dir(output_root: Path) -> Path | None:
         return None
     return max(dirs, key=lambda p: p.stat().st_mtime)
 
-def _append_query_history_record(
-    query: str,
-    limit: int,
-    output_dir: Path | None,
-    status: str,
-    error: str | None = None,
-) -> None:
-    """Append one query-output mapping record for visualizer crawl/run actions."""
-    try:
-        QUERY_HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
-        record = {
-            "timestamp": datetime.now().isoformat(timespec="seconds"),
-            "query": query,
-            "limit": limit,
-            "status": status,
-            "output_dir": str(output_dir.resolve()) if output_dir else None,
-        }
-        if error:
-            record["error"] = error
-        with QUERY_HISTORY_FILE.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
-    except Exception:
-        # History logging should never break the UI flow, but keep an explicit trace in terminal.
-        logger.exception("Failed to append query history record to %s", QUERY_HISTORY_FILE)
-
-
-def _compact_query_history_file() -> None:
-    """Keep only final records in history file (completed/failed), dropping legacy started rows."""
-    try:
-        if not QUERY_HISTORY_FILE.exists():
-            return
-        kept_lines = []
-        with QUERY_HISTORY_FILE.open("r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    record = json.loads(line)
-                except Exception:
-                    continue
-                if record.get("status") in {"completed", "failed"}:
-                    kept_lines.append(json.dumps(record, ensure_ascii=False))
-        with QUERY_HISTORY_FILE.open("w", encoding="utf-8") as f:
-            for line in kept_lines:
-                f.write(line + "\n")
-    except Exception:
-        logger.exception("Failed to compact query history file: %s", QUERY_HISTORY_FILE)
-
 
 def _load_output_query_mapping() -> dict[str, str]:
-    """Load mapping from output folder name to query text from history file."""
     mapping: dict[str, str] = {}
+    if not QUERY_HISTORY_FILE.exists():
+        return mapping
     try:
-        if not QUERY_HISTORY_FILE.exists():
-            return mapping
         with QUERY_HISTORY_FILE.open("r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
@@ -314,11 +100,14 @@ def _load_output_query_mapping() -> dict[str, str]:
                     continue
                 folder_name = Path(output_dir).name
                 if folder_name:
-                    # Keep the latest seen mapping if duplicates exist.
                     mapping[folder_name] = query
     except Exception:
         logger.exception("Failed to load output-query mapping from %s", QUERY_HISTORY_FILE)
     return mapping
+
+
+# ------------------------------
+# Helper Functions
 
 
 def _query_for_output_folder(folder_name: str | None) -> str | None:
@@ -327,6 +116,30 @@ def _query_for_output_folder(folder_name: str | None) -> str | None:
     mapping = _load_output_query_mapping()
     query = (mapping.get(folder_name) or "").strip()
     return query or None
+
+
+def get_logo_data_uri() -> str:
+    logo_path = Path(__file__).parent / "assets" / "webis.svg"
+    if logo_path.exists():
+        try:
+            svg_content = logo_path.read_text(encoding="utf-8")
+            encoded = base64.b64encode(svg_content.encode("utf-8")).decode("utf-8")
+            return f"data:image/svg+xml;base64,{encoded}"
+        except Exception:
+            logger.exception("Failed to load logo from %s", logo_path)
+
+    fallback_svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
+        '<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">'
+        '<stop offset="0%" stop-color="#22c55e"/><stop offset="100%" stop-color="#059669"/>'
+        '</linearGradient></defs>'
+        '<rect width="64" height="64" rx="16" fill="url(#g)"/>'
+        '<text x="32" y="42" text-anchor="middle" font-size="28" '
+        'font-family="Inter,Arial,sans-serif" font-weight="900" fill="white">W</text>'
+        '</svg>'
+    )
+    encoded_fallback = base64.b64encode(fallback_svg.encode("utf-8")).decode("utf-8")
+    return f"data:image/svg+xml;base64,{encoded_fallback}"
 
 
 def _get_env_paths() -> tuple[Path, Path]:
@@ -357,25 +170,38 @@ def _load_key_catalog(paths: list[Path]) -> dict[str, list[str]]:
 
         try:
             content = path.read_text(encoding="utf-8")
-            
+
             # Flexible check for section headers
             has_llm_header = "LLM Provider" in content or "LLM Providers" in content
-            has_data_header = "Data Source" in content or "Search/Scraping" in content or "Search API" in content
-            
+            has_data_header = "Search/Scraping" in content or "Search API" in content or "Data Source" in content
+
             if not has_llm_header and not has_data_header:
                 continue
 
-            for raw_line in content.splitlines():
+            lines = content.splitlines()
+
+            def _is_section_banner(index: int) -> bool:
+                if index <= 0 or index >= len(lines) - 1:
+                    return False
+                prev_line = lines[index - 1].strip()
+                next_line = lines[index + 1].strip()
+                return "===" in prev_line and "===" in next_line
+
+            for idx, raw_line in enumerate(lines):
                 line = raw_line.strip()
-                # Check for LLM section headers
-                if "LLM Provider" in line or "LLM Providers" in line:
-                    current_section = "llm"
-                    has_valid_sections = True
-                    continue
-                # Check for Data/Search section headers
-                if "Data Source" in line or "Search/Scraping" in line or "Search API" in line:
-                    current_section = "data_source"
-                    has_valid_sections = True
+
+                # Treat banner title comments as section boundaries.
+                if line.startswith("#") and _is_section_banner(idx):
+                    lowered = line.lower()
+                    if "llm provider" in lowered or "llm providers" in lowered:
+                        current_section = "llm"
+                        has_valid_sections = True
+                    elif "search/scraping" in lowered or "search api" in lowered or "data source" in lowered:
+                        current_section = "data_source"
+                        has_valid_sections = True
+                    else:
+                        # Entering other top-level section; stop collecting keys.
+                        current_section = None
                     continue
 
                 if not line or line.startswith("#") or "=" not in raw_line:
@@ -478,7 +304,7 @@ def _show_key_config_dialog() -> None:
         f"""
         <div class="key-config-note">
           <strong>LLM Provider keys:</strong> {llm_ready}/{len(llm_keys)} configured (at least 1 required)<br/>
-          <strong>Data Source keys:</strong> {data_ready}/{len(data_source_keys)} configured (3+ recommended)
+          <strong>Search/Scraping keys:</strong> {data_ready}/{len(data_source_keys)} configured (3+ recommended)
         </div>
         """,
         unsafe_allow_html=True,
@@ -487,7 +313,7 @@ def _show_key_config_dialog() -> None:
     with st.form("key_config_form", clear_on_submit=False):
         submitted_values: dict[str, str] = {}
         try:
-            key_scroll_container = st.container(height=420, border=False)
+            key_scroll_container = st.container(height=340, border=False)
         except TypeError:
             key_scroll_container = st.container()
 
@@ -501,7 +327,7 @@ def _show_key_config_dialog() -> None:
                     placeholder=f"Set {key}",
                 )
 
-            st.markdown("#### Data Source Keys")
+            st.markdown("#### Search/Scraping API Keys")
             for key in data_source_keys:
                 submitted_values[key] = st.text_input(
                     key,
@@ -533,9 +359,9 @@ def _show_key_config_dialog() -> None:
 
             st.success(f"Saved key configuration to {env_path} and {template_path}")
             if data_count < 3:
-                st.warning("Data Source keys configured fewer than 3. 3 or more is recommended.")
+                st.warning("Search/Scraping keys configured fewer than 3. 3 or more is recommended.")
             else:
-                st.info("Data Source key coverage looks good.")
+                st.info("Search/Scraping key coverage looks good.")
 
 
 def _is_crawl_running() -> bool:
@@ -649,17 +475,33 @@ def _finalize_background_crawl_if_finished() -> None:
     st.session_state.crawl_before_dirs = None
 
 
+def _webis_cli_env() -> dict:
+    """Return a copy of the current environment for CLI subprocess calls."""
+    env = os.environ.copy()
+    repo_root = str(Path(__file__).parent.parent.parent)
+    src_dir = str(Path(__file__).parent.parent)
+    # Ensure the repo src directory is on PYTHONPATH so webis package is importable
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = f"{src_dir}{os.pathsep}{repo_root}" + (f"{os.pathsep}{existing}" if existing else "")
+
+    # Respect model selection from the sidebar for all CLI subprocess calls.
+    selected_model = st.session_state.get("webis_selected_model", "auto")
+    if selected_model and selected_model != "auto":
+        env["WEBIS_LLM_MODEL"] = selected_model
+    else:
+        env.pop("WEBIS_LLM_MODEL", None)
+
+    return env
+
+
 def run_crawl_cli(query: str, limit: int) -> bool:
     repo_root = Path(__file__).parent.parent.parent
     output_root = repo_root / "output"
 
     # Keep the UI label "Start Crawling", but execute the end-to-end run command in background.
     cmd = [sys.executable, "-m", "webis.cli", "run", query, "--limit", str(limit)]
-    env = os.environ.copy()
-    env["PYTHONPATH"] = str(repo_root)
+    env = _webis_cli_env()
     env["PYTHONUNBUFFERED"] = "1"
-    env["HF_ENDPOINT"] = "https://hf-mirror.com"
-    env["HF_HUB_DOWNLOAD_TIMEOUT"] = "120"
 
     if st.session_state.get("crawl_proc") and st.session_state["crawl_proc"].poll() is None:
         return False
@@ -702,48 +544,73 @@ def run_crawl_cli(query: str, limit: int) -> bool:
     _attach_background_completion_rerun(proc)
     return True
 
-def run_html_report_cli(target_dir: str | None) -> str | None:
+def run_html_report_cli(target_dir: str | None) -> tuple[str | None, str | None]:
+    """Run the three-agent HTML report pipeline via CLI.
+
+    Uses rag_store.json as the primary knowledge base. The LLM model is
+    automatically selected by the router fallback chain — no manual model
+    selection is needed.
+    """
     if _is_crawl_running():
         print("[webis_visualizer] Skip html-report: crawl task is still running.", flush=True)
-        return None
+        return None, "Crawl task is still running"
 
     repo_root = Path(__file__).parent.parent.parent
     output_root = repo_root / "output"
     if not output_root.exists():
-        return None
+        return None, "Output directory not found"
 
     if not target_dir:
-        return None
+        return None, "No output folder selected"
 
     output_dir = output_root / target_dir
-    result_path = output_dir / "result.json"
-    documents_path = output_dir / "documents.json"
+    rag_store_path = output_dir / "rag_store.json"
 
-    if not result_path.exists():
-        return None
+    if not rag_store_path.exists():
+        return None, "rag_store.json not found — RAG knowledge base is required"
+
+    query = _query_for_output_folder(target_dir) or ""
 
     cmd = [
         sys.executable, "-m", "webis.cli", "html-report",
-        str(result_path),
+        str(rag_store_path),
     ]
-    if documents_path.exists():
-        cmd += ["--documents", str(documents_path)]
+    if query:
+        cmd += ["--query", query]
 
-    env = os.environ.copy()
-    env["PYTHONPATH"] = str(repo_root)
-    env["HF_ENDPOINT"] = "https://hf-mirror.com"
-    env["HF_HUB_DOWNLOAD_TIMEOUT"] = "120"
+    env = _webis_cli_env()
+    env["PYTHONUNBUFFERED"] = "1"
     print(f"[webis_visualizer] Running: {' '.join(cmd)}", flush=True)
-    result = subprocess.run(cmd, cwd=repo_root, env=env)
-    if result.returncode != 0:
-        print(f"[webis_visualizer] html-report failed with exit code {result.returncode}", flush=True)
-        return None
+    proc = subprocess.Popen(
+        cmd,
+        cwd=repo_root,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
 
-    report_path = output_dir / "report.html"
-    if report_path.exists():
-        return report_path.read_text(encoding="utf-8")
+    output_lines: list[str] = []
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        output_lines.append(line)
+        print(line, end="", flush=True)
 
-    return None
+    proc.wait()
+    output_text = "".join(output_lines)
+    if proc.returncode != 0:
+        print(f"[webis_visualizer] html-report failed with exit code {proc.returncode}", flush=True)
+        output_text_lower = output_text.lower()
+        if "api key" in output_text_lower or "missing" in output_text_lower or "invalid" in output_text_lower:
+            return None, "HTML report generation failed: API key is invalid or missing"
+        return None, "HTML report generation failed"
+
+    report_html_path = output_dir / "report.html"
+    if report_html_path.exists():
+        return report_html_path.read_text(encoding="utf-8"), None
+
+    return None, "report.html was not generated"
 
 
 def _find_latest_markdown_report(output_dir: Path) -> Path | None:
@@ -776,10 +643,7 @@ def run_markdown_report_cli(target_dir: str | None) -> tuple[str | None, Path | 
     if query:
         cmd += ["--query", query]
 
-    env = os.environ.copy()
-    env["PYTHONPATH"] = str(repo_root)
-    env["HF_ENDPOINT"] = "https://hf-mirror.com"
-    env["HF_HUB_DOWNLOAD_TIMEOUT"] = "120"
+    env = _webis_cli_env()
     print(f"[webis_visualizer] Running: {' '.join(cmd)}", flush=True)
     result = subprocess.run(cmd, cwd=repo_root, env=env)
     if result.returncode != 0:
@@ -795,6 +659,75 @@ def run_markdown_report_cli(target_dir: str | None) -> tuple[str | None, Path | 
         return None, None
 
     return after_latest.read_text(encoding="utf-8"), after_latest
+
+
+def run_image_report_cli(target_dir: str | None) -> tuple[str | None, str | None]:
+    """Run the image report pipeline (Gemini) via CLI.
+
+    Returns (image_path_str | None, error_msg | None).
+    """
+    if _is_crawl_running():
+        print("[webis_visualizer] Skip image-report: crawl task is still running.", flush=True)
+        return None, "Crawl task is still running"
+
+    repo_root = Path(__file__).parent.parent.parent
+    output_root = repo_root / "output"
+    if not output_root.exists():
+        return None, "Output directory not found"
+
+    if not target_dir:
+        return None, "No output folder selected"
+
+    output_dir = output_root / target_dir
+    rag_store_path = output_dir / "rag_store.json"
+
+    if not rag_store_path.exists():
+        return None, "rag_store.json not found — RAG knowledge base is required"
+
+    query = _query_for_output_folder(target_dir) or ""
+
+    cmd = [
+        sys.executable, "-m", "webis.cli", "image-report",
+        str(rag_store_path),
+    ]
+    if query:
+        cmd += ["--query", query]
+
+    env = _webis_cli_env()
+    env["PYTHONUNBUFFERED"] = "1"
+    print(f"[webis_visualizer] Running: {' '.join(cmd)}", flush=True)
+    proc = subprocess.Popen(
+        cmd,
+        cwd=repo_root,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+
+    output_lines: list[str] = []
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        output_lines.append(line)
+        print(line, end="", flush=True)
+
+    proc.wait()
+    output_text = "".join(output_lines)
+    if proc.returncode != 0:
+        print(f"[webis_visualizer] image-report failed with exit code {proc.returncode}", flush=True)
+        output_text_lower = output_text.lower()
+        if "api key" in output_text_lower or "zhouliu" in output_text_lower:
+            return None, "Image report failed: ZHOULIU_API_KEY is invalid or missing"
+        return None, "Image report generation failed"
+
+    # Find the latest generated image
+    for ext in ("*.png", "*.jpg", "*.jpeg"):
+        images = sorted(output_dir.glob(ext), key=lambda p: p.stat().st_mtime, reverse=True)
+        if images:
+            return str(images[0]), None
+
+    return None, "No image was generated"
 
 def load_output_dir_state(selected_dir: str | None) -> None:
     repo_root = Path(__file__).parent.parent.parent
@@ -842,6 +775,52 @@ def load_output_dir_state(selected_dir: str | None) -> None:
                 "progress": 30 if docs_path.exists() else 0
             })
 
+
+def init_session_state() -> None:
+    defaults = {
+        "documents": [],
+        "structured_result": None,
+        "pipeline_status": {
+            "fetch": "idle",
+            "clean": "idle",
+            "extract": "idle",
+            "progress": 0,
+        },
+        "crawl_proc": None,
+        "crawl_query": None,
+        "crawl_limit": None,
+        "crawl_before_dirs": None,
+        "last_output_dir": None,
+        "selected_output_dir": None,
+        "pending_select_dir": None,
+        "output_folder_select": None,
+        "history_compacted": False,
+        "webis_selected_model": "auto",
+        "html_report_status": "idle",
+        "html_report_last_dir": None,
+        "html_report_html": None,
+        "html_report_pending": False,
+        "html_report_error": None,
+        "markdown_report_status": "idle",
+        "markdown_report_last_dir": None,
+        "markdown_report_pending": False,
+        "image_report_status": "idle",
+        "image_report_last_dir": None,
+        "image_report_pending": False,
+        "image_report_error": None,
+    }
+
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+    pipeline_defaults = defaults["pipeline_status"]
+    if not isinstance(st.session_state.pipeline_status, dict):
+        st.session_state.pipeline_status = dict(pipeline_defaults)
+    else:
+        for status_key, status_value in pipeline_defaults.items():
+            st.session_state.pipeline_status.setdefault(status_key, status_value)
+
 # ------------------------------
 # Main App
 # ------------------------------
@@ -853,691 +832,98 @@ _finalize_background_crawl_if_finished()
 
 
 # Custom CSS
-st.markdown(textwrap.dedent("""
-    <style>
-        @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Fraunces:opsz,wght@9..144,600;700&display=swap');
+st.markdown(get_global_css(), unsafe_allow_html=True)
 
-        :root {
-            --bg-1: #f2fbfb;
-            --bg-2: #f3fbf1;
-            --ink: #173838;
-            --muted: #4a6b66;
-            --accent: #31adad;
-            --accent-2: #9cce7b;
-            --card: #ffffff;
-            --border: #d6ebe5;
-            --shadow: 0 18px 40px rgba(23, 56, 56, 0.12);
-        }
+# Floating sidebar toggle button – injected into parent document via JS
+st.markdown(
+    """
+    <script>
+    (function() {
+        function initToggle() {
+            var pdoc = window.parent.document;
 
-        html, body, [class*="css"] {
-            font-family: 'Space Grotesk', sans-serif;
-            color: var(--ink);
-        }
+            // Avoid double-init on Streamlit reruns
+            if (pdoc.getElementById('_wbs_sb_btn')) return;
 
-        div[data-testid="stAppViewContainer"] {
-            background: linear-gradient(140deg, var(--bg-1), var(--bg-2));
-        }
+            var btn = pdoc.createElement('button');
+            btn.id = '_wbs_sb_btn';
+            btn.title = 'Toggle sidebar';
+            btn.setAttribute('aria-label', 'Toggle sidebar');
+            btn.innerHTML = '<svg id="_wbs_sb_ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/></svg>';
 
-        section[data-testid="stSidebar"] {
-            background: linear-gradient(160deg, #d6efea, #d9f1d2);
-            border-right: 1px solid var(--border);
-            display: block !important;
-            visibility: visible !important;
-            transform: none !important;
-            margin-left: 0 !important;
-            width: 20rem !important;
-            min-width: 20rem !important;
-        }
-        /* Hide Streamlit's "Press Enter to apply" hint under text inputs */
-        div[data-testid="stTextInput"] small {
-            display: none !important;
-        }
-        .right-rail {
-            position: fixed;
-            top: 0;
-            right: 0;
-            height: 100vh;
-            width: 20rem;
-            background: linear-gradient(160deg, #d6efea, #d9f1d2);
-            border-left: 1px solid var(--border);
-            z-index: 0;
-            pointer-events: auto;
-            display: flex;
-            flex-direction: column;
-            padding: 18px 16px;
-            gap: 14px;
-        }
-        .right-rail-title {
-            font-weight: 700;
-            font-size: 1.05rem;
-            color: var(--ink);
-        }
-        .output-select-wrapper {
-            margin: 10px auto 6px;
-            width: 260px;
-        }
-        div[data-testid="stTabs"] {
-            margin-top: 6px;
-        }
-        div[data-testid="stTabs"] [role="tablist"] {
-            margin-bottom: 8px;
-        }
-        div[data-testid="stTabs"] [role="tabpanel"] {
-            padding-top: 0;
-        }
-        .output-select-wrapper div[data-testid="stSelectbox"] > div {
-            background: #ffffff;
-            border: 1px solid var(--border);
-            border-radius: 999px;
-            padding: 2px 10px;
-            box-shadow: 0 8px 18px rgba(23, 56, 56, 0.08);
-        }
-        .output-select-wrapper div[data-testid="stSelectbox"] span {
-            font-weight: 600;
-            color: var(--ink);
-        }
-        .right-rail-list {
-            display: grid;
-            gap: 12px;
-        }
-        .right-rail-item {
-            background: var(--card);
-            border: 1px solid var(--border);
-            border-radius: 14px;
-            padding: 12px 14px;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            box-shadow: var(--shadow);
-            color: var(--ink);
-            font-weight: 600;
-            font-size: 0.95rem;
-            text-decoration: none;
-            transition: transform 0.2s ease, box-shadow 0.2s ease;
-        }
-        .right-rail-item,
-        .right-rail-item *,
-        .right-rail-item:visited,
-        .right-rail-item:hover,
-        .right-rail-item:active,
-        .right-rail-item:focus {
-            text-decoration: none !important;
-            text-decoration-line: none !important;
-            color: var(--ink) !important;
-        }
-        .right-rail-item:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 10px 20px rgba(23, 56, 56, 0.12);
-        }
-        .right-rail-item.disabled {
-            pointer-events: none;
-            opacity: 0.5;
-        }
-        .right-rail-button {
-            width: 100%;
-            text-align: left;
-            cursor: pointer;
-            appearance: none;
-            border: 1px solid var(--border);
-            background: var(--card);
-        }
-        .right-rail-button:disabled {
-            cursor: not-allowed;
-        }
-        .right-rail-link {
-            display: inline-flex;
-            align-items: center;
-            gap: 8px;
-            margin-top: 16px;
-            padding: 10px 12px;
-            border-radius: 12px;
-            border: 1px dashed var(--border);
-            color: var(--ink);
-            text-decoration: none;
-            font-weight: 600;
-            font-size: 0.9rem;
-            background: rgba(255, 255, 255, 0.7);
-        }
-        .right-rail-link.muted {
-            color: var(--muted);
-            border-style: solid;
-        }
-        .right-rail-preview {
-            border: 1px dashed var(--border);
-            border-radius: 12px;
-            padding: 10px 12px;
-            color: var(--ink);
-            background: rgba(255, 255, 255, 0.7);
-            font-weight: 600;
-            font-size: 0.9rem;
-        }
-        .right-rail-preview-row {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-        .right-rail-preview.muted {
-            color: var(--muted);
-            border-style: solid;
-        }
-        .right-rail-preview iframe {
-            display: none;
-        }
-        .right-rail-footer {
-            margin-top: auto;
-            display: grid;
-            gap: 10px;
-            padding-top: 4px;
-        }
-        .right-rail-download {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            gap: 6px;
-            padding: 6px 10px;
-            border-radius: 8px;
-            border: 1px solid transparent;
-            background: var(--accent);
-            color: #ffffff;
-            font-weight: 600;
-            font-size: 0.8rem;
-            text-decoration: none;
-            box-shadow: 0 10px 20px rgba(49, 173, 173, 0.28);
-            transition: transform 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
-        }
-        .right-rail-download,
-        .right-rail-download:visited,
-        .right-rail-download:hover,
-        .right-rail-download:active,
-        .right-rail-download:focus {
-            text-decoration: none !important;
-            color: #ffffff !important;
-        }
-        .right-rail-download:hover {
-            transform: translateY(-1px);
-            box-shadow: 0 12px 22px rgba(49, 173, 173, 0.35);
-            background: #2a9c9c;
-        }
-        .right-rail-download svg {
-            width: 14px;
-            height: 14px;
-            fill: currentColor;
-        }
-        .right-rail-item.download-btn {
-            cursor: pointer;
-        }
-        .right-rail-icon {
-            width: 28px;
-            height: 28px;
-            border-radius: 10px;
-            background: #e4f7f4;
-            display: grid;
-            place-items: center;
-            flex: 0 0 auto;
-        }
-        .right-rail-icon.icon-json {
-            background: #e6f0ff;
-            color: #2b6cb0;
-        }
-        .right-rail-icon.icon-html {
-            background: #ffe9e3;
-            color: #c05621;
-        }
-        .right-rail-icon.icon-md {
-            background: #ecf8ef;
-            color: #2f855a;
-        }
-        .right-rail-icon.icon-key {
-            background: #fff4dd;
-            color: #b7791f;
-        }
-        .right-rail-icon svg {
-            width: 16px;
-            height: 16px;
-            fill: currentColor;
-        }
-        div[data-testid="stDialog"] [role="dialog"] {
-            border: 1px solid var(--border);
-            border-radius: 16px;
-            background: linear-gradient(160deg, #edf9f7, #eef8ea);
-            width: min(780px, 92vw) !important;
-            max-width: 780px !important;
-            height: 76vh;
-            max-height: 76vh;
-            overflow: hidden;
-        }
-        div[data-testid="stDialog"] [role="dialog"] > div {
-            padding-bottom: 8px !important;
-        }
-        div[data-testid="stDialog"] [role="dialog"] form {
-            margin-bottom: 0 !important;
-        }
-        div[data-testid="stDialog"] [role="dialog"] [data-testid="stFormSubmitButton"] {
-            margin-bottom: 0 !important;
-            position: sticky;
-            bottom: 0;
-            z-index: 2;
-            background: linear-gradient(180deg, rgba(237, 249, 247, 0.65), rgba(238, 248, 234, 1));
-            padding-top: 8px;
-        }
-        div[data-testid="stDialog"] [role="dialog"] h2 {
-            font-family: 'Fraunces', serif;
-            color: var(--ink);
-        }
-        .key-config-scroll {
-            max-height: 58vh;
-            overflow-y: auto;
-            overflow-x: hidden;
-            padding-right: 6px;
-        }
-        .key-config-scroll::-webkit-scrollbar {
-            width: 8px;
-        }
-        .key-config-scroll::-webkit-scrollbar-thumb {
-            background: rgba(23, 56, 56, 0.28);
-            border-radius: 999px;
-        }
-        .key-config-note {
-            border: 1px solid var(--border);
-            background: rgba(255, 255, 255, 0.78);
-            border-radius: 12px;
-            padding: 10px 12px;
-            color: var(--ink);
-            font-size: 0.9rem;
-            margin-bottom: 8px;
-            line-height: 1.45;
-        }
-        section[data-testid="stSidebar"] .stButton > button {
-            background: var(--accent);
-            color: #ffffff;
-            border: none;
-        }
-        section[data-testid="stSidebar"] .stButton > button:hover {
-            background: #279b9b;
-            color: #ffffff;
+            // Inline styles so no dependency on host CSS loading order
+            Object.assign(btn.style, {
+                position:     'fixed',
+                top:          '50%',
+                left:         '0',
+                transform:    'translateY(-50%)',
+                zIndex:       '999999',
+                width:        '28px',
+                height:       '52px',
+                background:   '#ffffff',
+                border:       '1px solid #e5e7eb',
+                borderLeft:   'none',
+                borderRadius: '0 8px 8px 0',
+                boxShadow:    '2px 0 8px rgba(0,0,0,0.08)',
+                cursor:       'pointer',
+                display:      'flex',
+                alignItems:   'center',
+                justifyContent: 'center',
+                padding:      '0',
+                color:        '#6b7280',
+                transition:   'all 0.15s ease',
+            });
+
+            btn.addEventListener('mouseenter', function() {
+                btn.style.background = '#f0fdf4';
+                btn.style.borderColor = '#bbf7d0';
+                btn.style.color = '#15803d';
+                btn.style.width = '32px';
+            });
+            btn.addEventListener('mouseleave', function() {
+                btn.style.background = '#ffffff';
+                btn.style.borderColor = '#e5e7eb';
+                btn.style.color = '#6b7280';
+                btn.style.width = '28px';
+            });
+
+            var _hidden = false;
+            btn.addEventListener('click', function() {
+                var sidebar = pdoc.querySelector('section[data-testid="stSidebar"]');
+                if (!sidebar) return;
+                _hidden = !_hidden;
+                if (_hidden) {
+                    // Hide: collapse width to 0, keep element in DOM
+                    sidebar.style.cssText += ';width:0!important;min-width:0!important;overflow:hidden!important;padding:0!important;border:none!important;';
+                    // Flip icon
+                    btn.querySelector('svg').innerHTML = '<rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/><polyline points="12 8 9 13 12 18"/>';
+                    btn.style.left = '0';
+                } else {
+                    // Restore
+                    sidebar.style.cssText = sidebar.style.cssText
+                        .replace(/;?width:0!important/g, '')
+                        .replace(/;?min-width:0!important/g, '')
+                        .replace(/;?overflow:hidden!important/g, '')
+                        .replace(/;?padding:0!important/g, '')
+                        .replace(/;?border:none!important/g, '');
+                    btn.querySelector('svg').innerHTML = '<rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/>';
+                }
+            });
+
+            pdoc.body.appendChild(btn);
         }
 
-        [data-testid="stDeployButton"] {
-            display: none;
-        }
-        [data-testid="stMainMenu"] {
-            display: none;
-        }
-        [data-testid="stDeployButton"] {
-            display: none;
-        }
-        a[aria-label="Deploy"] {
-            display: none;
-        }
-        button[aria-label="Deploy"] {
-            display: none;
-        }
-        button[title="Deploy"] {
-            display: none;
-        }
-        button[title="Settings"] {
-            display: none;
-        }
-        #MainMenu {
-            visibility: hidden;
-        }
-        header[data-testid="stHeader"] [data-testid="stToolbar"],
-        header[data-testid="stHeader"] [data-testid="stToolbarActions"],
-        header[data-testid="stHeader"] .stAppToolbar,
-        header[data-testid="stHeader"] .stAppToolbarContainer,
-        div[data-testid="stToolbar"] {
-            display: none !important;
-        }
-        header[data-testid="stHeader"] {
-            background: transparent;
-            box-shadow: none;
-        }
-        header[data-testid="stHeader"]::after {
-            background: transparent;
-        }
-        div[data-testid="stAppViewContainer"] .block-container {
-            padding-top: 1.2rem;
-            padding-right: 22rem;
-        }
-
-        h1, h2, h3, h4 {
-            font-family: 'Fraunces', serif;
-            letter-spacing: 0.2px;
-        }
-        h1 {
-            margin-top: 0 !important;
-        }
-
-        .brand-bar {
-            display: flex;
-            align-items: center;
-            gap: 16px;
-            padding: 10px 14px;
-            border-radius: 18px;
-            background: linear-gradient(120deg, rgba(49, 173, 173, 0.12), rgba(156, 206, 123, 0.12));
-            border: 1px solid var(--border);
-            box-shadow: var(--shadow);
-            margin-bottom: 18px;
-            animation: rise 0.35s ease;
-        }
-        .brand-mark img {
-            width: 64px;
-            height: 64px;
-            object-fit: contain;
-        }
-        .brand-title {
-            font-size: 1.6rem;
-            font-weight: 700;
-            margin: 0;
-        }
-        .brand-subtitle {
-            font-size: 0.95rem;
-            color: var(--muted);
-        }
-
-        .section-title {
-            font-weight: 700;
-            font-size: 1.1rem;
-            margin-bottom: 0.6rem;
-        }
-        .section-gap {
-            height: 18px;
-        }
-
-        .status-dot {
-            height: 8px;
-            width: 8px;
-            border-radius: 50%;
-            display: inline-block;
-            margin-right: 6px;
-        }
-        .status-idle { background-color: #b9b4ac; }
-        .status-in-progress { background-color: var(--accent); }
-        .status-completed { background-color: #2f855a; }
-        .status-failed { background-color: #c53030; }
-
-        .stat-row {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-            gap: 14px;
-            margin: 10px 0 20px;
-        }
-        .stat-card {
-            background: var(--card);
-            border: 1px solid var(--border);
-            border-radius: 16px;
-            padding: 14px 16px;
-            box-shadow: var(--shadow);
-            animation: rise 0.35s ease;
-        }
-        .stat-label {
-            color: var(--muted);
-            font-size: 0.85rem;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-        }
-        .stat-value {
-            font-size: 1.6rem;
-            font-weight: 700;
-            margin-top: 6px;
-        }
-
-        .pipeline-board {
-            background: var(--card);
-            border: 1px solid var(--border);
-            border-radius: 18px;
-            padding: 18px 20px;
-            box-shadow: var(--shadow);
-            animation: rise 0.4s ease;
-        }
-        .pipeline-title {
-            font-weight: 700;
-            font-size: 1.05rem;
-        }
-        .progress-shell {
-            height: 10px;
-            border-radius: 999px;
-            background: #e5f4f1;
-            overflow: hidden;
-            margin-top: 12px;
-        }
-        .progress-fill {
-            height: 100%;
-            background: linear-gradient(90deg, var(--accent), var(--accent-2));
-            border-radius: 999px;
-            transition: width 0.3s ease;
-        }
-        .progress-shell.loading .progress-fill {
-            background-size: 200% 100%;
-            animation: progress-flow 1.2s ease-in-out infinite;
-        }
-        @keyframes progress-flow {
-            0% { background-position: 0% 50%; }
-            50% { background-position: 100% 50%; }
-            100% { background-position: 0% 50%; }
-        }
-        .pipeline-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-            gap: 14px;
-            margin-top: 18px;
-        }
-        .pipeline-step {
-            border-radius: 16px;
-            padding: 14px 16px;
-            border: 1px solid var(--border);
-            background: #f8fffc;
-            animation: rise 0.35s ease;
-        }
-        .pipeline-step.completed { border-left: 4px solid #2f855a; }
-        .pipeline-step.in-progress { border-left: 4px solid var(--accent); }
-        .pipeline-step.failed { border-left: 4px solid #c53030; }
-        .pipeline-step.idle { border-left: 4px solid #b9b4ac; }
-        .step-header {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 8px;
-        }
-        .step-title {
-            font-weight: 600;
-            flex: 1;
-        }
-        .step-status {
-            font-size: 0.75rem;
-            text-transform: uppercase;
-            letter-spacing: 0.8px;
-            color: var(--muted);
-        }
-        .step-desc {
-            color: var(--muted);
-            font-size: 0.9rem;
-            margin-top: 6px;
-        }
-
-        .chat-surface {
-            background: #f3fbf6;
-            border: 1px solid var(--border);
-            border-radius: 18px;
-            padding: 16px;
-            max-height: 58vh;
-            overflow-y: auto;
-            box-shadow: var(--shadow);
-        }
-        .chat-bubble {
-            border-radius: 14px;
-            padding: 12px 14px;
-            margin-bottom: 12px;
-            border: 1px solid #d9efe8;
-            background: #ffffff;
-            animation: rise 0.3s ease;
-        }
-        .chat-bubble.user {
-            margin-left: 18%;
-            background: #dff5f0;
-            border-color: #bfe8dd;
-        }
-        .chat-bubble.assistant {
-            margin-right: 18%;
-            background: #f7fffb;
-            border-color: #d6ebe5;
-        }
-        .chat-role {
-            font-size: 0.7rem;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            color: var(--muted);
-            margin-bottom: 6px;
-        }
-        .chat-content {
-            line-height: 1.5;
-        }
-        .chat-empty {
-            color: var(--muted);
-            background: #f8fffc;
-            border: 1px dashed var(--border);
-            border-radius: 14px;
-            padding: 16px;
-        }
-        .assistant-shell {
-            background: #ffffff;
-            border: 1px solid var(--border);
-            border-radius: 18px;
-            box-shadow: var(--shadow);
-            overflow: hidden;
-        }
-        .assistant-header {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            padding: 14px 18px;
-            border-bottom: 1px solid var(--border);
-            background: linear-gradient(160deg, #d6efea, #d9f1d2);
-        }
-        .assistant-title {
-            font-weight: 700;
-            font-size: 1rem;
-        }
-        .assistant-actions {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-        .assistant-body {
-            min-height: 52vh;
-            display: grid;
-            place-items: center;
-            padding: 32px 18px 24px;
-            background: #fbfffd;
-        }
-        .assistant-empty {
-            display: grid;
-            place-items: center;
-            gap: 12px;
-            text-align: center;
-            color: var(--muted);
-        }
-        .assistant-empty-title {
-            font-weight: 700;
-            color: var(--ink);
-            font-size: 1.05rem;
-        }
-        .assistant-footer {
-            border-top: 1px solid var(--border);
-            padding: 10px 14px;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            color: var(--muted);
-            font-size: 0.85rem;
-            background: #f2fbf1;
-        }
-        .side-card {
-            background: var(--card);
-            border: 1px solid var(--border);
-            border-radius: 16px;
-            padding: 14px 16px;
-            box-shadow: var(--shadow);
-            margin-bottom: 14px;
-        }
-        .side-card h4 {
-            margin: 0 0 10px;
-            font-size: 1rem;
-        }
-        .source-row {
-            padding: 8px 0;
-            border-bottom: 1px dashed #e6e0d7;
-        }
-        .source-row:last-child {
-            border-bottom: none;
-        }
-        .source-title {
-            font-weight: 600;
-            font-size: 0.9rem;
-        }
-        .source-meta {
-            color: var(--muted);
-            font-size: 0.8rem;
-        }
-        div[data-testid="stFileUploader"] {
-            position: relative;
-            border: 1px dashed var(--border);
-            border-radius: 16px;
-            background: #f8fffc;
-            padding: 28px 12px;
-            min-height: 120px;
-            box-shadow: var(--shadow);
-            overflow: hidden;
-        }
-        div[data-testid="stFileUploader"]::before {
-            content: "+";
-            position: absolute;
-            inset: 0;
-            display: grid;
-            place-items: center;
-            font-size: 2.4rem;
-            color: var(--muted);
-            pointer-events: none;
-        }
-        div[data-testid="stFileUploader"] > label,
-        div[data-testid="stFileUploader"] section {
-            display: none !important;
-        }
-        div[data-testid="stFileUploader"] button {
-            position: absolute !important;
-            inset: 0 !important;
-            opacity: 0 !important;
-        }
-        div[data-testid="stChatInput"] {
-            background: #f2fbf1;
-            border: 1px solid var(--border);
-            border-radius: 16px;
-            padding: 6px 10px;
-            box-shadow: var(--shadow);
-        }
-        div[data-testid="stChatInput"] textarea {
-            background: transparent !important;
-            border: none !important;
-            color: var(--ink);
-            font-family: 'Space Grotesk', sans-serif;
-        }
-        div[data-testid="stChatInput"] textarea::placeholder {
-            color: var(--muted);
-        }
-        div[data-testid="stChatInput"] button {
-            background: var(--accent) !important;
-            color: #ffffff !important;
-            border: none !important;
-            border-radius: 999px !important;
-            box-shadow: none !important;
-        }
-
-        @keyframes rise {
-            from { transform: translateY(6px); opacity: 0.0; }
-            to { transform: translateY(0); opacity: 1; }
-        }
-    </style>
-"""), unsafe_allow_html=True)
+        // Run immediately and also after a short delay (for Streamlit rerenders)
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', function() { setTimeout(initToggle, 300); });
+        } else {
+            setTimeout(initToggle, 300);
+        }
+    })();
+    </script>
+    """,
+    unsafe_allow_html=True,
+)
 
 logo_uri = get_logo_data_uri()
 st.markdown(
@@ -1548,7 +934,12 @@ st.markdown(
             </div>
             <div>
                 <div class="brand-title">Webis</div>
+                <div class="brand-subtitle">Intelligent Knowledge Pipeline</div>
             </div>
+            <span class="brand-badge">
+                <svg width="6" height="6" viewBox="0 0 6 6" style="flex-shrink:0;"><circle cx="3" cy="3" r="3" fill="#4ade80"/></svg>
+                v2.0
+            </span>
         </div>
     """),
     unsafe_allow_html=True
@@ -1575,7 +966,6 @@ else:
     st.session_state.selected_output_dir = None
     st.session_state.output_folder_select = None
 
-st.markdown("<div class=\"output-select-wrapper\">", unsafe_allow_html=True)
 selected = st.selectbox(
     "Output Folder",
     options=output_folders,
@@ -1586,269 +976,39 @@ selected = st.selectbox(
 )
 st.session_state.selected_output_dir = selected if output_folders else None
 load_output_dir_state(st.session_state.selected_output_dir)
-st.markdown("</div>", unsafe_allow_html=True)
 
-# Right rail (uses selected output folder)
-structured_json_link = ""
-structured_json_class = "right-rail-item disabled"
+
+
+# Main content tabs (place directly after output selector to keep spacing tight)
+tab1, tab2 = st.tabs([
+    "📊 Pipeline Dashboard",
+    "🔄 Data Transformation",
+])
+
 selected_dir = st.session_state.selected_output_dir
-result_path = None
-report_path = None
-rag_store_path = None
-markdown_report_path = None
-
-if selected_dir:
-    result_path = output_root / selected_dir / "result.json"
-    report_path = output_root / selected_dir / "report.html"
-    rag_store_path = output_root / selected_dir / "rag_store.json"
-    markdown_report_path = _find_latest_markdown_report(output_root / selected_dir)
-
-if result_path and result_path.exists():
-    structured_json = result_path.read_text(encoding="utf-8")
-    structured_json_b64 = base64.b64encode(structured_json.encode("utf-8")).decode("utf-8")
-    structured_json_link = f"data:application/json;charset=utf-8;base64,{structured_json_b64}"
-    structured_json_class = "right-rail-item"
-    html_report_enabled = True
-else:
-    html_report_enabled = False
-
-html_report_download_link = ""
-if report_path and report_path.exists():
-    html_report_content = report_path.read_text(encoding="utf-8")
-    html_report_b64 = base64.b64encode(html_report_content.encode("utf-8")).decode("utf-8")
-    html_report_download_link = f"data:text/html;charset=utf-8;base64,{html_report_b64}"
-
-markdown_report_download_link = ""
-if markdown_report_path and markdown_report_path.exists():
-    markdown_report_content = markdown_report_path.read_text(encoding="utf-8")
-    markdown_report_b64 = base64.b64encode(markdown_report_content.encode("utf-8")).decode("utf-8")
-    markdown_report_download_link = f"data:text/markdown;charset=utf-8;base64,{markdown_report_b64}"
-
-markdown_report_block = '<div class="right-rail-preview muted">No Markdown report yet</div>'
-is_active_markdown_dir = bool(selected_dir) and selected_dir == st.session_state.markdown_report_last_dir
-if st.session_state.markdown_report_status == "processing" and is_active_markdown_dir:
-    markdown_report_block = '<div class="right-rail-preview">Processing...</div>'
-elif markdown_report_path and markdown_report_path.exists():
-    markdown_report_block = textwrap.dedent(f"""
-        <div class="right-rail-preview-row">
-            <div class="right-rail-preview">Markdown Report Ready</div>
-            <a class="right-rail-download" href="{markdown_report_download_link}" download="{markdown_report_path.name}">
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                    <path d="M12 3a1 1 0 0 1 1 1v8.59l2.3-2.3a1 1 0 1 1 1.4 1.42l-4.01 4a1 1 0 0 1-1.38 0l-4.01-4a1 1 0 1 1 1.4-1.42L11 12.59V4a1 1 0 0 1 1-1zm-7 14a1 1 0 0 1 1 1v1h12v-1a1 1 0 1 1 2 0v2a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-2a1 1 0 0 1 1-1z"/>
-                </svg>
-                <span>Download</span>
-            </a>
-        </div>
-    """).strip()
-elif st.session_state.markdown_report_status == "failed" and is_active_markdown_dir:
-    markdown_report_block = '<div class="right-rail-preview muted">Failed to generate Markdown report</div>'
-
-html_report_block = '<div class="right-rail-preview muted">No HTML report yet</div>'
-is_active_html_dir = bool(selected_dir) and selected_dir == st.session_state.html_report_last_dir
-if st.session_state.html_report_status == "processing" and is_active_html_dir:
-    html_report_block = '<div class="right-rail-preview">Processing...</div>'
-elif report_path and report_path.exists():
-    html_report_block = textwrap.dedent(f"""
-        <div class="right-rail-preview-row">
-            <div class="right-rail-preview">HTML Report Ready</div>
-            <a class="right-rail-download" href="{html_report_download_link}" download="report.html">
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                    <path d="M12 3a1 1 0 0 1 1 1v8.59l2.3-2.3a1 1 0 1 1 1.4 1.42l-4.01 4a1 1 0 0 1-1.38 0l-4.01-4a1 1 0 1 1 1.4-1.42L11 12.59V4a1 1 0 0 1 1-1zm-7 14a1 1 0 0 1 1 1v1h12v-1a1 1 0 1 1 2 0v2a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-2a1 1 0 0 1 1-1z"/>
-                </svg>
-                <span>Download</span>
-            </a>
-        </div>
-    """).strip()
-elif st.session_state.html_report_status == "failed" and is_active_html_dir:
-    html_report_block = '<div class="right-rail-preview muted">Failed to generate HTML report</div>'
-
-html_report_action_enabled = (
-    html_report_enabled
-    and st.session_state.html_report_status != "processing"
-    and not _is_crawl_running()
-)
-html_report_button_class = "right-rail-item right-rail-button"
-if not html_report_action_enabled:
-    html_report_button_class += " disabled"
-html_report_button_disabled_attr = "disabled" if not html_report_action_enabled else ""
-
-markdown_report_enabled = bool(rag_store_path and rag_store_path.exists())
-markdown_report_action_enabled = (
-    markdown_report_enabled
-    and st.session_state.markdown_report_status != "processing"
-    and not _is_crawl_running()
-)
-markdown_report_button_class = "right-rail-item right-rail-button"
-if not markdown_report_action_enabled:
-    markdown_report_button_class += " disabled"
-markdown_report_button_disabled_attr = "disabled" if not markdown_report_action_enabled else ""
-
 _, env_example_path = _get_env_paths()
 key_config_action_enabled = env_example_path.exists()
-key_config_button_class = "right-rail-item right-rail-button"
-if not key_config_action_enabled:
-    key_config_button_class += " disabled"
-key_config_button_disabled_attr = "disabled" if not key_config_action_enabled else ""
-
-st.markdown(
-    textwrap.dedent(f"""
-        <aside class="right-rail">
-            <div class="right-rail-title">Value Data Generation</div>
-            <div class="right-rail-list">
-                <a class="{structured_json_class}" href="{structured_json_link or '#'}" download="result.json">
-                    <div class="right-rail-icon icon-json">
-                        <svg viewBox="0 0 24 24" aria-hidden="true">
-                            <path d="M7 4h7l4 4v12a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zm7 1.5V9h3.5L14 5.5zM8 12h2v2H8v-2zm0 4h2v2H8v-2zm4-4h4v2h-4v-2zm0 4h4v2h-4v-2z"/>
-                        </svg>
-                    </div>
-                    <div>Structured JSON file</div>
-                </a>
-                <button class="{markdown_report_button_class}" id="markdown-report-trigger" type="button" {markdown_report_button_disabled_attr}>
-                    <div class="right-rail-icon icon-md">
-                        <svg viewBox="0 0 24 24" aria-hidden="true">
-                            <path d="M5 4h8l6 6v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zm8 1.5V10h4.5L13 5.5zM7 12h6v2H7v-2zm0 4h8v2H7v-2z"/>
-                            <path d="M15.5 14.5h2v2h-2v-2z"/>
-                        </svg>
-                    </div>
-                    <div>Markdown report</div>
-                </button>
-                <button class="{html_report_button_class}" id="html-report-trigger" type="button" {html_report_button_disabled_attr}>
-                    <div class="right-rail-icon icon-html">
-                        <svg viewBox="0 0 24 24" aria-hidden="true">
-                            <path d="M4 5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5zm9-1.5V9h4.5L13 3.5zM7 12h4v2H7v-2zm0 4h6v2H7v-2z"/>
-                            <path d="M14 12l2-2 2 2-2 2-2-2z"/>
-                        </svg>
-                    </div>
-                    <div>HTML report</div>
-                </button>
-            </div>
-            {markdown_report_block}
-            {html_report_block}
-            <div class="right-rail-footer">
-                <button class="{key_config_button_class}" id="config-keys-trigger" type="button" {key_config_button_disabled_attr}>
-                    <div class="right-rail-icon icon-key">
-                        <svg viewBox="0 0 24 24" aria-hidden="true">
-                            <path d="M14.5 2a7.5 7.5 0 0 0-6.98 10.27L2 17.79V22h4.21l1.5-1.5H10v-2.29l1.5-1.5h2.29l.94-.94A7.5 7.5 0 1 0 14.5 2zm0 3a2 2 0 1 1 0 4 2 2 0 0 1 0-4z"/>
-                        </svg>
-                    </div>
-                    <div>Configure Keys</div>
-                </button>
-            </div>
-        </aside>
-    """),
-    unsafe_allow_html=True
-)
-
-markdown_report_clicked = st.button(
-    "Markdown report action",
-    key="markdown_report_action_hidden",
-    help="Markdown report action",
-    disabled=not markdown_report_action_enabled
-)
-
-html_report_clicked = st.button(
-    "HTML report action",
-    key="html_report_action_hidden",
-    help="HTML report action",
-    disabled=not html_report_action_enabled
-)
-
-config_keys_clicked = st.button(
-    "Config keys action",
-    key="config_keys_action_hidden",
-    help="Config keys action",
-    disabled=not key_config_action_enabled
-)
-
-components.html(
-    """
-    <script>
-    (function() {
-      const findHiddenButton = (label) => {
-        const buttons = Array.from(window.parent.document.querySelectorAll('button'));
-        return buttons.find((btn) => (btn.textContent || '').trim() === label);
-      };
-        const bind = () => {
-          const pairs = [
-          ['markdown-report-trigger', 'Markdown report action'],
-          ['html-report-trigger', 'HTML report action'],
-          ['config-keys-trigger', 'Config keys action'],
-        ];
-        pairs.forEach(([triggerId, hiddenLabel]) => {
-          const trigger = window.parent.document.getElementById(triggerId);
-          const hidden = findHiddenButton(hiddenLabel);
-          if (hidden) {
-            const wrap = hidden.closest('[data-testid=\"stButton\"]') || hidden.parentElement;
-            if (wrap) wrap.style.display = 'none';
-          }
-          if (trigger && hidden && !trigger.dataset.bound) {
-            trigger.addEventListener('click', (event) => {
-              event.preventDefault();
-              event.stopPropagation();
-              if (trigger.hasAttribute('disabled')) return;
-              hidden.click();
-            });
-            trigger.dataset.bound = '1';
-          }
-        });
-      };
-      const observer = new MutationObserver(bind);
-      observer.observe(window.parent.document.body, { childList: true, subtree: true });
-      bind();
-    })();
-    </script>
-    """,
-    height=0,
-    width=0
-)
-
-if html_report_clicked:
-    st.session_state.html_report_status = "processing"
-    st.session_state.html_report_last_dir = st.session_state.selected_output_dir
-    st.session_state.html_report_html = None
-    st.session_state.html_report_pending = True
-    st.rerun()
-
-if markdown_report_clicked:
-    st.session_state.markdown_report_status = "processing"
-    st.session_state.markdown_report_last_dir = st.session_state.selected_output_dir
-    st.session_state.markdown_report_pending = True
-    st.rerun()
-
-if config_keys_clicked:
-    _show_key_config_dialog()
-
-if (
-    st.session_state.html_report_pending
-    and st.session_state.html_report_status == "processing"
-    and st.session_state.selected_output_dir
-):
-    st.session_state.html_report_pending = False
-    html_output = run_html_report_cli(st.session_state.selected_output_dir)
-    if html_output:
-        st.session_state.html_report_status = "ready"
-    else:
-        st.session_state.html_report_status = "failed"
-    st.rerun()
-
-if (
-    st.session_state.markdown_report_pending
-    and st.session_state.markdown_report_status == "processing"
-    and st.session_state.selected_output_dir
-):
-    st.session_state.markdown_report_pending = False
-    markdown_output, _ = run_markdown_report_cli(st.session_state.selected_output_dir)
-    if markdown_output:
-        st.session_state.markdown_report_status = "ready"
-    else:
-        st.session_state.markdown_report_status = "failed"
-    st.rerun()
 
 # ------------------------------
 # Sidebar - Data Source Management
 # ------------------------------
 # Single page for data sources
-st.sidebar.subheader("Web Crawling")
+st.sidebar.markdown(
+    """
+    <div class="sidebar-mini-title">
+        <span class="smt-icon">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="11" cy="11" r="7"/>
+                <line x1="16.5" y1="16.5" x2="22" y2="22"/>
+                <path d="M11 4a7 7 0 0 1 4 1.5"/>
+                <path d="M8 5.5C6.5 7 6 9 6 11"/>
+            </svg>
+        </span>
+        <span>Web Crawling</span>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 query = st.sidebar.text_input("Search Query", placeholder="Enter your search query...")
 limit = st.sidebar.slider("Number of Results", min_value=1, max_value=10, value=3)
@@ -1868,40 +1028,130 @@ if _is_crawl_running():
     st.sidebar.info(f"⏳ Running in background: {st.session_state.get('crawl_query')}")
 
 st.sidebar.markdown("---")
-st.sidebar.subheader("Local Upload")
-st.sidebar.caption("Supported: PDF, Word, PPT, HTML, TXT, CSV, MD")
 
-uploaded_files = st.sidebar.file_uploader(
-    "Upload Files",
-    accept_multiple_files=True,
-    type=["pdf", "doc", "docx", "ppt", "pptx", "html", "txt", "csv", "md"],
-    label_visibility="collapsed"
+# --- Model Selector ---
+_all_models = list_registered_models()
+_model_keys = list(_all_models.keys())
+
+def _model_display_name(key: str) -> str:
+    """Create a human-friendly label for the dropdown."""
+    if key == "auto":
+        return "🤖 Auto"
+    cfg = _all_models.get(key)
+    if not cfg:
+        return key
+    has_key = _has_real_env_value(cfg.api_key_env) if cfg.api_key_env else False
+    status = "✅" if has_key else "⚠️"
+    return f"{status} {key}  —  {cfg.name}"
+
+_selector_options = ["auto"] + _model_keys
+_current_idx = 0
+if st.session_state.webis_selected_model in _selector_options:
+    _current_idx = _selector_options.index(st.session_state.webis_selected_model)
+
+st.sidebar.markdown(
+    """
+    <div class="sidebar-mini-title">
+        <span class="smt-icon">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+                <rect x="4" y="4" width="16" height="16" rx="2"/>
+                <rect x="9" y="9" width="6" height="6" rx="1"/>
+                <line x1="9" y1="1" x2="9" y2="4"/>
+                <line x1="15" y1="1" x2="15" y2="4"/>
+                <line x1="9" y1="20" x2="9" y2="23"/>
+                <line x1="15" y1="20" x2="15" y2="23"/>
+                <line x1="20" y1="9" x2="23" y2="9"/>
+                <line x1="20" y1="14" x2="23" y2="14"/>
+                <line x1="1" y1="9" x2="4" y2="9"/>
+                <line x1="1" y1="14" x2="4" y2="14"/>
+            </svg>
+        </span>
+        <span>Model</span>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+st.session_state.webis_selected_model = st.sidebar.selectbox(
+    "LLM Model",
+    options=_selector_options,
+    index=_current_idx,
+    format_func=_model_display_name,
+    key="_model_selector_widget",
+    label_visibility="collapsed",
 )
 
-if st.sidebar.button("Process Uploaded Files"):
-    if uploaded_files:
-        with st.spinner("Processing uploaded files..."):
-            local_docs = []
-            for file in uploaded_files:
-                doc = process_local_file(file)
-                local_docs.append(doc)
+# Show a short hint about what the current selection means.
+if st.session_state.webis_selected_model == "auto":
+    st.sidebar.markdown(
+        '<span style="font-size:0.78rem;color:var(--muted);line-height:1.4">'
+        'Automatically picks the best available model</span>',
+        unsafe_allow_html=True,
+    )
+else:
+    _sel_cfg = _all_models.get(st.session_state.webis_selected_model)
+    if _sel_cfg:
+        _has = _has_real_env_value(_sel_cfg.api_key_env) if _sel_cfg.api_key_env else False
+        if _has:
+            st.sidebar.markdown(
+                f'<span style="font-size:0.78rem;color:var(--green-400);line-height:1.4">'
+                f'<b>{_sel_cfg.name}</b> · {_sel_cfg.provider}</span>',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.sidebar.markdown(
+                f'<span style="font-size:0.78rem;color:#facc15;line-height:1.4">'
+                f'⚠️ <code style="color:#facc15;background:rgba(250,204,21,0.1);padding:1px 4px;border-radius:4px;">{_sel_cfg.api_key_env}</code> 未配置，将使用免费模型</span>',
+                unsafe_allow_html=True,
+            )
+
+st.sidebar.markdown("---")
+st.sidebar.markdown(
+    """
+    <div class="sidebar-mini-title">
+        <span class="smt-icon">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="7.5" cy="15.5" r="5.5"/>
+                <path d="M21 2l-9.6 9.6"/>
+                <path d="M15.5 7.5l3 3"/>
+                <path d="M18 5l2 2"/>
+            </svg>
+        </span>
+        <span>Key Configuration</span>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+if st.sidebar.button("Configure Keys", disabled=not key_config_action_enabled):
+    _show_key_config_dialog()
+# st.sidebar.subheader("Local Upload")
+# st.sidebar.caption("Supported: PDF, Word, PPT, HTML, TXT, CSV, MD")
+
+# uploaded_files = st.sidebar.file_uploader(
+#     "Upload Files",
+#     accept_multiple_files=True,
+#     type=["pdf", "doc", "docx", "ppt", "pptx", "html", "txt", "csv", "md"],
+#     label_visibility="collapsed"
+# )
+
+# if st.sidebar.button("Process Uploaded Files"):
+#     if uploaded_files:
+#         with st.spinner("Processing uploaded files..."):
+#             local_docs = []
+#             for file in uploaded_files:
+#                 doc = process_local_file(file)
+#                 local_docs.append(doc)
             
-            # Update session state
-            st.session_state.documents.extend(local_docs)
-            st.session_state.pipeline_status["fetch"] = "completed"
-            st.session_state.pipeline_status["progress"] = 30
-            st.success(f"✅ Processed {len(local_docs)} local files")
-    else:
-        st.error("❌ Please upload some files first")
+#             # Update session state
+#             st.session_state.documents.extend(local_docs)
+#             st.session_state.pipeline_status["fetch"] = "completed"
+#             st.session_state.pipeline_status["progress"] = 30
+#             st.success(f"✅ Processed {len(local_docs)} local files")
+#     else:
+#         st.error("❌ Please upload some files first")
 
 # ------------------------------
 # Main Content Area
 # ------------------------------
-tab1, tab3 = st.tabs([
-    "📊 Pipeline Dashboard", 
-    "💬 AI Assistant"
-])
-
 with tab1:
     st.header("Pipeline Dashboard")
 
@@ -1911,10 +1161,21 @@ with tab1:
         textwrap.dedent(f"""
             <div class="stat-row">
                 <div class="stat-card">
+                    <div class="stat-icon">
+                        <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
+                            <polyline points="14 2 14 8 20 8"/>
+                        </svg>
+                    </div>
                     <div class="stat-label">Raw Documents</div>
                     <div class="stat-value">{doc_count}</div>
                 </div>
                 <div class="stat-card">
+                    <div class="stat-icon">
+                        <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round">
+                            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+                        </svg>
+                    </div>
                     <div class="stat-label">Pipeline Progress</div>
                     <div class="stat-value">{progress}%</div>
                 </div>
@@ -1939,13 +1200,13 @@ with tab1:
         return labels.get(status, status)
 
     step_blocks = []
-    for key, title, desc in step_defs:
+    for idx, (key, title, desc) in enumerate(step_defs, 1):
         status = st.session_state.pipeline_status.get(key, "idle")
         status_css = status.replace("_", "-")
         step_blocks.append(textwrap.dedent(f"""
             <div class="pipeline-step {status_css}">
+                <div class="step-number">{idx}</div>
                 <div class="step-header">
-                    <span class="status-dot status-{status_css}"></span>
                     <span class="step-title">{title}</span>
                     <span class="step-status">{status_label(status)}</span>
                 </div>
@@ -1964,7 +1225,8 @@ with tab1:
     st.markdown(
         textwrap.dedent(f"""
             <div class="pipeline-board">
-                <div class="pipeline-title">Pipeline Flow</div>
+                <div class="pipeline-title"><span class="pipeline-title-dot"></span>Pipeline Flow</div>
+                <div class="pipeline-subtitle">Track your data processing stages from acquisition through knowledge extraction.</div>
                 <div class="progress-shell {loading_class}">
                     <div class="progress-fill" style="width: {progress}%"></div>
                 </div>
@@ -1983,6 +1245,8 @@ with tab1:
 
     st.subheader("Data Sources")
     if st.session_state.documents:
+        import html as _html_esc
+        source_items = []
         for doc in st.session_state.documents:
             label = "Unknown source"
             if doc.meta:
@@ -1992,61 +1256,333 @@ with tab1:
                     label = doc.meta.title
                 elif doc.meta.custom and doc.meta.custom.get("file_path"):
                     label = doc.meta.custom.get("file_path")
-            st.write(f"- {label}")
+            source_items.append(f'<div class="source-item">{_html_esc.escape(label)}</div>')
+        st.markdown(
+            '<div class="source-list">' + '\n'.join(source_items) + '</div>',
+            unsafe_allow_html=True,
+        )
     else:
         st.caption("No data sources yet. Start crawling or upload local files to populate this list.")
 
     # Removed "Run Full Pipeline" button per request
 
-with tab3:
-    st.header("AI Assistant")
+with tab2:
+    st.header("Data Transformation")
+    st.caption("Select a target format and run the transformation from the selected output directory.")
 
-    pending_prompt = st.session_state.pop("queued_prompt", None)
-    if st.session_state.get("pending_prompt"):
-        pending_prompt = st.session_state.pop("pending_prompt")
-    if pending_prompt:
-        run_assistant(pending_prompt)
+    selected_dir = st.session_state.selected_output_dir
+    result_path = None
+    report_path = None
+    rag_store_path = None
+    markdown_report_path = None
 
-    st.markdown(
-        textwrap.dedent("""
-            <div class="assistant-shell">
-                <div class="assistant-header">
-                    <div class="assistant-title">Chat</div>
-                </div>
-            </div>
-        """),
-        unsafe_allow_html=True
+    if selected_dir:
+        result_path = output_root / selected_dir / "result.json"
+        report_path = output_root / selected_dir / "report.html"
+        rag_store_path = output_root / selected_dir / "rag_store.json"
+        markdown_report_path = _find_latest_markdown_report(output_root / selected_dir)
+
+    html_report_enabled = bool(rag_store_path and rag_store_path.exists())
+    markdown_report_enabled = bool(rag_store_path and rag_store_path.exists())
+
+    html_report_action_enabled = (
+        html_report_enabled
+        and st.session_state.html_report_status != "processing"
+        and not _is_crawl_running()
+    )
+    markdown_report_action_enabled = (
+        markdown_report_enabled
+        and st.session_state.markdown_report_status != "processing"
+        and not _is_crawl_running()
     )
 
-    if not st.session_state.chat_history:
-        st.markdown(
-            textwrap.dedent("""
-                <div class="assistant-shell">
-                    <div class="assistant-body">
-                        <div class="assistant-empty">
-                            <div class="assistant-empty-title">Add data to get started</div>
-                        </div>
-                    </div>
-                    <div class="assistant-footer">
-                        <div>Add data to get started</div>
-                        <div>0 data sources</div>
-                    </div>
-                </div>
-            """),
-            unsafe_allow_html=True
-        )
-    else:
-        with st.container():
-            render_chat_history(st.session_state.chat_history)
+    if not selected_dir:
+        st.info("Select an output directory first.")
+    elif not rag_store_path or not rag_store_path.exists():
+        st.warning("`rag_store.json` is required before generating reports.")
 
-    st.markdown("<div style=\"height: 16px;\"></div>", unsafe_allow_html=True)
-    prompt = st.chat_input("Ask about your data, request summaries, or explore patterns...")
-    if prompt:
-        st.session_state.pending_prompt = prompt
-        st.experimental_rerun()
+    # --- Determine processing state ---
+    is_any_processing = (
+        st.session_state.html_report_status == "processing"
+        or st.session_state.markdown_report_status == "processing"
+        or st.session_state.image_report_status == "processing"
+    )
+
+    # --- Four-item navigation ---
+    transform_options = ["📝 markdown", "🌐 HTML", "🖼️ image", "📊 ppt"]
+    selected_transform = st.radio(
+        "Transformation target",
+        options=transform_options,
+        horizontal=True,
+        key="transform_nav_tab2",
+        label_visibility="collapsed",
+    )
+    # Normalize: strip emoji prefix so downstream comparisons stay unchanged
+    selected_transform = selected_transform.split(" ", 1)[-1]
+
+    # ---- Preview box ----
+    _is_current_processing = (
+        (selected_transform == "markdown" and st.session_state.markdown_report_status == "processing")
+        or (selected_transform == "HTML" and st.session_state.html_report_status == "processing")
+        or (selected_transform == "image" and st.session_state.image_report_status == "processing")
+    )
+
+    _has_preview = False
+    _preview_html = ""
+
+    if selected_transform == "markdown" and markdown_report_path and markdown_report_path.exists():
+        _md_raw = markdown_report_path.read_text(encoding="utf-8")
+        # Render markdown to HTML for preview
+        import html as _html_mod
+        _escaped = _html_mod.escape(_md_raw)
+        _preview_html = (
+            '<div class="preview-box"><div class="preview-box-content">'
+            f'<pre style="white-space:pre-wrap;word-break:break-word;font-family:inherit;margin:0;font-size:0.92rem;line-height:1.6;">{_escaped}</pre>'
+            '</div></div>'
+        )
+        _has_preview = True
+    elif selected_transform == "HTML" and report_path and report_path.exists():
+        _html_raw = report_path.read_text(encoding="utf-8")
+        import base64 as _b64_mod
+        _b64_html = _b64_mod.b64encode(_html_raw.encode("utf-8")).decode("utf-8")
+        _preview_html = (
+            '<div class="preview-box">'
+            f'<iframe src="data:text/html;base64,{_b64_html}" style="width:100%;min-height:418px;border:none;border-radius:12px;"></iframe>'
+            '</div>'
+        )
+        _has_preview = True
+    elif selected_transform == "image":
+        # Check for any generated images in the output dir
+        _img_found = False
+        if selected_dir:
+            _img_dir = output_root / selected_dir
+            for _ext in ("*.png", "*.jpg", "*.jpeg", "*.svg"):
+                _images = sorted(_img_dir.glob(_ext))
+                if _images:
+                    _img_path = _images[-1]
+                    import base64 as _b64_mod
+                    _img_bytes = _img_path.read_bytes()
+                    _img_b64 = _b64_mod.b64encode(_img_bytes).decode("utf-8")
+                    _suffix = _img_path.suffix.lstrip(".")
+                    _mime = f"image/{'svg+xml' if _suffix == 'svg' else _suffix}"
+                    _preview_html = (
+                        '<div class="preview-box"><div class="preview-box-content" style="text-align:center;">'
+                        f'<img src="data:{_mime};base64,{_img_b64}" alt="Generated image" />'
+                        '</div></div>'
+                    )
+                    _has_preview = True
+                    _img_found = True
+                    break
+    elif selected_transform == "ppt":
+        # Check for pptx file in output dir
+        if selected_dir:
+            _ppt_dir = output_root / selected_dir
+            _ppts = sorted(_ppt_dir.glob("*.pptx"))
+            if _ppts:
+                _preview_html = (
+                    '<div class="preview-box"><div class="preview-box-empty">'
+                    '<svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">'
+                    '<rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/>'
+                    '</svg>'
+                    '<span style="font-size:1.05rem;">PPT file generated — download to view</span>'
+                    '</div></div>'
+                )
+                _has_preview = True
+
+    if _is_current_processing:
+        # Show loading spinner
+        st.markdown(
+            '<div class="preview-box">'
+            '<div class="preview-loading">'
+            '<div class="spinner"></div>'
+            '<span class="spinner-text">Generating report…</span>'
+            '</div></div>',
+            unsafe_allow_html=True,
+        )
+    elif _has_preview:
+        st.markdown(_preview_html, unsafe_allow_html=True)
+    else:
+        # Show empty placeholder
+        _placeholder_icon = {
+            "markdown": '<svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>',
+            "HTML": '<svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>',
+            "image": '<svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>',
+            "ppt": '<svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/></svg>',
+        }.get(selected_transform, '')
+        st.markdown(
+            '<div class="preview-box">'
+            '<div class="preview-box-empty">'
+            f'{_placeholder_icon}'
+            f'<span>Select <b>{selected_transform}</b> and click Start Generate to preview</span>'
+            '</div></div>',
+            unsafe_allow_html=True,
+        )
+
+    # --- Unified "Start Generate" button (below navigation) ---
+    _gen_disabled = True
+    _gen_help = ""
+    if selected_transform == "markdown":
+        _gen_disabled = not markdown_report_action_enabled
+        if not _gen_disabled:
+            _gen_help = "Generate Markdown report from rag_store.json"
+    elif selected_transform == "HTML":
+        _gen_disabled = not html_report_action_enabled
+        if not _gen_disabled:
+            _gen_help = "Generate HTML report from rag_store.json"
+    elif selected_transform == "image":
+        _gen_disabled = not (
+            bool(rag_store_path and rag_store_path.exists())
+            and st.session_state.image_report_status != "processing"
+            and not _is_crawl_running()
+        )
+        if not _gen_disabled:
+            _gen_help = "Generate image poster via Gemini from rag_store.json"
+        else:
+            _gen_help = "Requires rag_store.json"
+    else:
+        _gen_disabled = True
+        _gen_help = "PPT export is coming soon"
+
+    generate_clicked = st.button(
+        "🚀 Start Generate",
+        key="unified_generate_btn_tab2",
+        use_container_width=True,
+        disabled=_gen_disabled,
+        help=_gen_help,
+    )
+
+    # Show download button inline when report is already available
+    if selected_transform == "markdown" and markdown_report_path and markdown_report_path.exists():
+        _md_content = markdown_report_path.read_text(encoding="utf-8")
+        st.download_button(
+            "⬇ Download Markdown",
+            data=_md_content,
+            file_name=markdown_report_path.name,
+            mime="text/markdown",
+            key="download_markdown_tab2",
+            use_container_width=True,
+        )
+    elif selected_transform == "HTML" and report_path and report_path.exists():
+        _html_content = report_path.read_text(encoding="utf-8")
+        st.download_button(
+            "⬇ Download HTML",
+            data=_html_content,
+            file_name="report.html",
+            mime="text/html",
+            key="download_html_tab2",
+            use_container_width=True,
+        )
+    elif selected_transform == "image" and selected_dir:
+        _img_dir = output_root / selected_dir
+        for _ext in ("*.png", "*.jpg", "*.jpeg", "*.svg"):
+            _images = sorted(_img_dir.glob(_ext))
+            if _images:
+                _img_path = _images[-1]
+                st.download_button(
+                    "⬇ Download Image",
+                    data=_img_path.read_bytes(),
+                    file_name=_img_path.name,
+                    mime=f"image/{_img_path.suffix.lstrip('.')}",
+                    key="download_image_tab2",
+                    use_container_width=True,
+                )
+                break
+    elif selected_transform == "ppt" and selected_dir:
+        _ppt_dir = output_root / selected_dir
+        _ppts = sorted(_ppt_dir.glob("*.pptx"))
+        if _ppts:
+            st.download_button(
+                "⬇ Download PPT",
+                data=_ppts[-1].read_bytes(),
+                file_name=_ppts[-1].name,
+                mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                key="download_ppt_tab2",
+                use_container_width=True,
+            )
+
+    # --- Handle generate click ---
+    if generate_clicked:
+        if selected_transform == "markdown":
+            st.session_state.markdown_report_status = "processing"
+            st.session_state.markdown_report_last_dir = st.session_state.selected_output_dir
+            st.session_state.markdown_report_pending = True
+            st.rerun()
+        elif selected_transform == "HTML":
+            st.session_state.html_report_status = "processing"
+            st.session_state.html_report_last_dir = st.session_state.selected_output_dir
+            st.session_state.html_report_html = None
+            st.session_state.html_report_pending = True
+            st.session_state.html_report_error = None
+            st.rerun()
+        elif selected_transform == "image":
+            st.session_state.image_report_status = "processing"
+            st.session_state.image_report_last_dir = st.session_state.selected_output_dir
+            st.session_state.image_report_pending = True
+            st.session_state.image_report_error = None
+            st.rerun()
+
+    # --- Pending state processing ---
+    if (
+        st.session_state.html_report_pending
+        and st.session_state.html_report_status == "processing"
+        and st.session_state.selected_output_dir
+    ):
+        st.session_state.html_report_pending = False
+        html_output, html_error = run_html_report_cli(
+            st.session_state.selected_output_dir,
+        )
+        if html_output:
+            st.session_state.html_report_status = "ready"
+            st.session_state.html_report_error = None
+        else:
+            st.session_state.html_report_status = "failed"
+            st.session_state.html_report_error = html_error or "Failed to generate HTML report"
+        st.rerun()
+
+    if (
+        st.session_state.markdown_report_pending
+        and st.session_state.markdown_report_status == "processing"
+        and st.session_state.selected_output_dir
+    ):
+        st.session_state.markdown_report_pending = False
+        markdown_output, _ = run_markdown_report_cli(st.session_state.selected_output_dir)
+        if markdown_output:
+            st.session_state.markdown_report_status = "ready"
+        else:
+            st.session_state.markdown_report_status = "failed"
+        st.rerun()
+
+    if (
+        st.session_state.image_report_pending
+        and st.session_state.image_report_status == "processing"
+        and st.session_state.selected_output_dir
+    ):
+        st.session_state.image_report_pending = False
+        image_output, image_error = run_image_report_cli(
+            st.session_state.selected_output_dir,
+        )
+        if image_output:
+            st.session_state.image_report_status = "ready"
+            st.session_state.image_report_error = None
+        else:
+            st.session_state.image_report_status = "failed"
+            st.session_state.image_report_error = image_error or "Failed to generate image report"
+        st.rerun()
+
+    # Show error/status feedback
+    if st.session_state.markdown_report_status == "failed" and selected_transform == "markdown":
+        st.error("Failed to generate Markdown report")
+    if st.session_state.html_report_status == "failed" and selected_transform == "HTML":
+        st.error(st.session_state.html_report_error or "Failed to generate HTML report")
+    if st.session_state.image_report_status == "failed" and selected_transform == "image":
+        st.error(st.session_state.image_report_error or "Failed to generate image report")
 
 # ------------------------------
 # Footer
 # ------------------------------
-st.markdown("---")
-st.caption("🚀 Webis Visualizer - powered by Webis AI Pipeline")
+st.markdown(
+    '<div class="webis-footer">'
+    'Built with <a href="#">Webis</a> · Intelligent Knowledge Pipeline'
+    '</div>',
+    unsafe_allow_html=True
+)

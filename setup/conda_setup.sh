@@ -42,7 +42,7 @@ pip install -r setup/requirements.txt
 # Install the local package so the `webis` CLI entry point is available.
 echo ""
 echo "Installing webis package in editable mode..."
-pip install -e . --no-deps
+pip install -e .
 
 echo ""
 echo "Setup completed successfully!"

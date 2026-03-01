@@ -1,5 +1,6 @@
 import logging
 import os
+import json
 import requests
 from typing import Iterator, Optional, Dict, Any
 
@@ -33,7 +34,10 @@ class SerperSearchPlugin(SourcePlugin):
             self.api_key = os.environ.get("SERPER_API_KEY")
             
         if not self.api_key:
-            logger.error("SERPER_API_KEY not found in environment variables.")
+            if os.environ.get("SERP_API_KEY"):
+                logger.warning("Detected SERP_API_KEY (SerpAPI) but serper_search needs SERPER_API_KEY. Skipping serper_search.")
+            else:
+                logger.error("SERPER_API_KEY not found in environment variables.")
             return
 
         logger.info(f"[Serper] Searching: {query} (limit={limit})")
@@ -73,5 +77,3 @@ class SerperSearchPlugin(SourcePlugin):
 
         except Exception as e:
             logger.error(f"[Serper] Search failed: {e}")
-
-import json

@@ -17,7 +17,7 @@ class WebisClient:
     def ingest(
         self, 
         query: str, 
-        sources: List[str] = ["duckduckgo"], 
+        sources: List[str] = ["tavily_search"], 
         max_results: int = 10,
         pipeline_preset: str = "default",
         wait: bool = False,

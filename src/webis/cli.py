@@ -76,13 +76,17 @@ def _build_rag_knowledge_base_from_documents(documents_path: str) -> Optional[st
     from webis.core.rag.manager import RAGManager
     from webis.plugins.processors.embedding_plugin import EmbeddingGemmaPlugin
 
-    # Force HuggingFace mirror settings before loading embedding model.
+    # Prefer offline mode so cached models are used without network access.
+    # Fall back to HuggingFace mirror only when the model is not yet cached.
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")
+    os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
     os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
     os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = "120"
     logger.info(
-        "Using HuggingFace mirror for RAG embedding build: HF_ENDPOINT=%s, HF_HUB_DOWNLOAD_TIMEOUT=%s",
+        "Using HuggingFace mirror for RAG embedding build: HF_ENDPOINT=%s, HF_HUB_DOWNLOAD_TIMEOUT=%s, OFFLINE=%s",
         os.environ["HF_ENDPOINT"],
         os.environ["HF_HUB_DOWNLOAD_TIMEOUT"],
+        os.environ.get("HF_HUB_OFFLINE"),
     )
 
     rag_documents = _prepare_rag_documents_from_json(documents_path)
@@ -359,11 +363,11 @@ def main():
     extract_parser.add_argument("--schema", help="Path to JSON schema")
     extract_parser.add_argument("--output", "-o", help="Output file")
 
-    # html-report command (from result.json + documents.json)
-    html_report_parser = subparsers.add_parser("html-report", help="Generate HTML report from result.json")
-    html_report_parser.add_argument("result", help="Path to result.json")
-    html_report_parser.add_argument("--documents", help="Path to documents.json")
+    # html-report command (multi-agent pipeline from rag_store.json)
+    html_report_parser = subparsers.add_parser("html-report", help="Generate HTML report via three-agent pipeline")
+    html_report_parser.add_argument("rag_store", help="Path to rag_store.json (RAG knowledge base)")
     html_report_parser.add_argument("--output", "-o", help="Output directory")
+    html_report_parser.add_argument("--query", help="Report focus query")
 
     # markdown-report command (from rag_store.json)
     markdown_report_parser = subparsers.add_parser(
@@ -372,6 +376,15 @@ def main():
     )
     markdown_report_parser.add_argument("rag_store", help="Path to rag_store.json")
     markdown_report_parser.add_argument("--query", help="Optional report focus query")
+
+    # image-report command (Gemini image generation from rag_store.json)
+    image_report_parser = subparsers.add_parser(
+        "image-report",
+        help="Generate image poster/infographic via Gemini from rag_store.json",
+    )
+    image_report_parser.add_argument("rag_store", help="Path to rag_store.json (RAG knowledge base)")
+    image_report_parser.add_argument("--output", "-o", help="Output directory")
+    image_report_parser.add_argument("--query", help="Report focus query")
 
     # visualizer command
     visualizer_parser = subparsers.add_parser("visualizer", help="Launch Webis Visualizer UI (Streamlit)")
@@ -383,9 +396,11 @@ def main():
     elif args.command == "extract":
         cmd_extract(args.files, args.task, args.schema, args.output)
     elif args.command == "html-report":
-        cmd_html_report(args.result, args.documents, args.output)
+        cmd_html_report(args.rag_store, args.output, getattr(args, 'query', None))
     elif args.command == "markdown-report":
         cmd_markdown_report(args.rag_store, args.query)
+    elif args.command == "image-report":
+        cmd_image_report(args.rag_store, args.output, getattr(args, 'query', None))
     elif args.command == "visualizer":
         cmd_visualizer()
     else:
@@ -556,7 +571,12 @@ def cmd_extract(files: List[str], task: str, schema_path: str = None, output_fil
         with open(output_file, "w", encoding="utf-8") as f:
             f.write(json.dumps(result.model_dump(mode="json"), indent=2, ensure_ascii=False))
 
-def cmd_html_report(result_path: str, documents_path: str = None, output_dir: str = None):
+def cmd_html_report(
+    rag_store_path: str,
+    output_dir: str = None,
+    query: str = None,
+):
+    """Generate an HTML report purely from the RAG knowledge base."""
     registry = get_default_registry()
     html_plugin = registry.get_output("html_report")
 
@@ -564,30 +584,28 @@ def cmd_html_report(result_path: str, documents_path: str = None, output_dir: st
         logger.error("HtmlReportPlugin not found.")
         return
 
-    if not os.path.exists(result_path):
-        logger.error(f"result.json not found: {result_path}")
+    if not os.path.exists(rag_store_path):
+        logger.error(f"rag_store.json not found: {rag_store_path}")
         return
 
     if not output_dir:
-        output_dir = os.path.dirname(result_path) or "."
+        output_dir = os.path.dirname(rag_store_path) or "."
 
     os.makedirs(output_dir, exist_ok=True)
 
-    with open(result_path, "r") as f:
-        result_data = json.load(f)
-    result = StructuredResult.model_validate(result_data)
+    try:
+        ok = html_plugin.save(
+            rag_store_path=rag_store_path,
+            output_dir=output_dir,
+            query=query or "",
+        )
+    except Exception as e:
+        logger.error("Failed to generate HTML report: %s", e)
+        raise SystemExit(1)
 
-    documents = []
-    if documents_path:
-        if not os.path.exists(documents_path):
-            logger.error(f"documents.json not found: {documents_path}")
-            return
-        with open(documents_path, "r") as f:
-            docs_data = json.load(f)
-        documents = [WebisDocument.model_validate(d) for d in docs_data]
-
-    context = PipelineContext(task="Generate HTML report", output_dir=output_dir)
-    html_plugin.save(result, context=context, output_dir=output_dir, documents=documents)
+    if not ok:
+        logger.error("Failed to generate HTML report")
+        raise SystemExit(1)
     print(f"\n✨ Report generated: {os.path.join(output_dir, 'report.html')}")
 
 
@@ -598,6 +616,44 @@ def cmd_markdown_report(rag_store_path: str, query: str = None):
     except Exception as e:
         logger.error(f"Failed to generate markdown report from RAG store: {e}")
         raise
+
+
+def cmd_image_report(
+    rag_store_path: str,
+    output_dir: str = None,
+    query: str = None,
+):
+    """Generate an image report (poster/infographic) from the RAG knowledge base via Gemini."""
+    registry = get_default_registry()
+    image_plugin = registry.get_output("image_report")
+
+    if not image_plugin:
+        logger.error("ImageReportPlugin not found.")
+        return
+
+    if not os.path.exists(rag_store_path):
+        logger.error(f"rag_store.json not found: {rag_store_path}")
+        return
+
+    if not output_dir:
+        output_dir = os.path.dirname(rag_store_path) or "."
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    try:
+        ok = image_plugin.save(
+            rag_store_path=rag_store_path,
+            output_dir=output_dir,
+            query=query or "",
+        )
+    except Exception as e:
+        logger.error("Failed to generate image report: %s", e)
+        raise SystemExit(1)
+
+    if not ok:
+        logger.error("Failed to generate image report")
+        raise SystemExit(1)
+
 
 if __name__ == "__main__":
     main()

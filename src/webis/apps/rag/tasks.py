@@ -414,30 +414,12 @@ class ReportGenerationTask(RAGTask):
             
             markdown_content = "\n".join(markdown_lines)
             
-            # Try to save file
-            output_path = None
-            try:
-                output_dir = Path(".") / "data"
-                output_dir.mkdir(parents=True, exist_ok=True)
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                
-                if self.output_format == "pdf":
-                    output_path = output_dir / f"report_{timestamp}.pdf"
-                    self._generate_pdf(markdown_content, output_path)
-                else:
-                    output_path = output_dir / f"report_{timestamp}.md"
-                    output_path.write_text(markdown_content, encoding="utf-8")
-                
-                logger.info(f"✓ Report saved to {output_path}")
-            except Exception as e:
-                logger.warning(f"Failed to save report: {e}")
-            
             return {
                 "task_name": self.get_name(),
                 "success": True,
                 "report_content": markdown_content,
                 "report_format": self.output_format,
-                "output_path": str(output_path) if output_path else None,
+                "output_path": None,
                 "stats": {
                     "documents_count": len(retrieved_docs),
                     "content_length": len(markdown_content),

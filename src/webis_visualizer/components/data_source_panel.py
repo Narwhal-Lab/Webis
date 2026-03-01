@@ -27,7 +27,7 @@ def render_data_source_panel(
     # Single page for all data sources
     render_web_crawling_section(on_documents_updated)
     st.sidebar.markdown("---")
-    render_local_upload_section(on_documents_updated)
+    # render_local_upload_section(on_documents_updated)
     
     # ======================
     # Document List

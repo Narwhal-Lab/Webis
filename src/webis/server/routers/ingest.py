@@ -11,7 +11,7 @@ router = APIRouter()
 
 class IngestRequest(BaseModel):
     query: str
-    sources: List[str] = ["duckduckgo"]
+    sources: List[str] = ["tavily_search"]
     max_results: int = 10
     pipeline_preset: Optional[str] = "default"
     config_overrides: Optional[Dict[str, Any]] = None

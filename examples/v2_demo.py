@@ -11,7 +11,6 @@ sys.path.append(os.path.join(os.path.dirname(__file__), "../src"))
 
 from webis.core.plugin import get_default_registry
 from webis.plugins.sources import (
-    DuckDuckGoPlugin, 
     GNewsPlugin, 
     GitHubSearchPlugin,
     HackerNewsPlugin
@@ -29,7 +28,6 @@ def main():
     registry = get_default_registry()
     
     # 2. Register Plugins
-    registry.register_class(DuckDuckGoPlugin)
     registry.register_class(GNewsPlugin)
     registry.register_class(GitHubSearchPlugin)
     registry.register_class(HackerNewsPlugin)
@@ -40,8 +38,7 @@ def main():
     logger.info(f"Registered Processors: {registry.list_processors()}")
     
     # 3. Run a simple pipeline
-    # Let's use DuckDuckGo as it doesn't require API keys
-    source = registry.get_source("duckduckgo")
+    source = registry.get_source("hackernews")
     fetcher = registry.get_processor("html_fetcher")
     cleaner = registry.get_processor("html_cleaner")
     

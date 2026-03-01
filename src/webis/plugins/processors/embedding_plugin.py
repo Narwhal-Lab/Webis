@@ -52,7 +52,21 @@ class GemmaEmbedding(EmbeddingModel):
             from sentence_transformers import SentenceTransformer
             
             logger.info(f"Loading embedding model: {self.model_name}")
-            self.model = SentenceTransformer(self.model_name, device=self.device)
+            try:
+                self.model = SentenceTransformer(self.model_name, device=self.device)
+            except (RuntimeError, OSError, Exception) as net_err:
+                # If the first attempt fails (e.g. SSL / network issues), retry
+                # in offline mode so the locally-cached model is used directly.
+                import os
+                if os.environ.get("HF_HUB_OFFLINE") != "1":
+                    logger.warning(
+                        f"Online model load failed ({net_err}), retrying in offline mode …"
+                    )
+                    os.environ["HF_HUB_OFFLINE"] = "1"
+                    os.environ["TRANSFORMERS_OFFLINE"] = "1"
+                    self.model = SentenceTransformer(self.model_name, device=self.device)
+                else:
+                    raise
             
             # Get embedding dimension by encoding a dummy text
             dummy_embedding = self.model.encode("test", convert_to_numpy=True)

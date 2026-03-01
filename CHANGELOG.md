@@ -24,7 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - RAG-ready capabilities with embedding generation
 - Streamlit-based visualizer web interface
 - CLI tools for pipeline management
-- Support for multiple data sources (DuckDuckGo, GitHub, Semantic Scholar, etc.)
+- Support for multiple data sources (Tavily, GitHub, Semantic Scholar, etc.)
 - PDF and HTML document processing
 - OCR support for image-based documents
 - LLM-based structured data extraction

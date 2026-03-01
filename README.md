@@ -198,7 +198,6 @@ Webis is built around a powerful plugin architecture:
 
 ### Data Source Plugins
 
-- `duckduckgo` - DuckDuckGo Search
 - `semantic_scholar` - Academic papers
 - `github` - GitHub repositories
 - `gnews` - Google News

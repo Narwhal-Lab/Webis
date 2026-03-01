@@ -1,332 +1,397 @@
 # User Guide
 
-Complete guide for using Webis's features.
+Complete guide for using Webis v2.
 
 ## Table of Contents
 
 1. [Installation](#installation)
-2. [Web Data Collection](#web-data-collection)
-3. [Document Processing](#document-processing)
-4. [Knowledge Base Building](#knowledge-base-building)
-5. [Web Interface](#web-interface)
-6. [Advanced Features](#advanced-features)
-7. [Troubleshooting](#troubleshooting)
+2. [CLI Commands](#cli-commands)
+3. [Intelligent Pipeline](#intelligent-pipeline)
+4. [HTML Report Generation](#html-report-generation)
+5. [Document Extraction](#document-extraction)
+6. [RAG Knowledge Base](#rag-knowledge-base)
+7. [Web Interface (Visualizer)](#web-interface-visualizer)
+8. [LLM Configuration](#llm-configuration)
+9. [Search Source Plugins](#search-source-plugins)
+10. [Troubleshooting](#troubleshooting)
 
 ## Installation
 
-### Quick Install
+### Conda (Recommended)
 
 ```bash
-# Using setup script
-bash setup/conda_setup.sh
-```
-
-### Manual Install
-
-```bash
-# Install from source
 git clone https://github.com/Narwhal-Lab/Webis.git
 cd webis
-pip install -e .
+bash setup/conda_setup.sh
+conda activate webis
 ```
 
-### Docker Install
+### Docker
 
 ```bash
-# Using Docker Compose
-docker-compose up
-
-# Detached mode
 docker-compose up -d
 ```
 
-## Web Data Collection
+See [Docker Usage](docker-usage.md) for details.
 
-### Basic Search
-
-```bash
-webis run "Latest AI news" --limit 5
-```
-
-### Using Specific Sources
+### Manual
 
 ```bash
-webis run "Machine learning tutorials" \
-  --sources github,stackoverflow \
-  --limit 10
+pip install -e .
 ```
 
-### Advanced Search
+## CLI Commands
+
+Webis provides five main CLI commands:
+
+### `webis run` — Intelligent Crawl Pipeline
 
 ```bash
-webis run "Recent developments in quantum computing" \
-  --sources semantic_scholar,arxiv \
-  --limit 20 \
-  --date-range "2024-01-01:2024-12-31"
+webis run <TASK> [--limit N] [--output DIR]
 ```
 
-### Available Sources
+| Argument | Description |
+|----------|-------------|
+| `TASK` | Natural language task description (positional, required) |
+| `--limit N` | Maximum number of documents to collect (default: 5) |
+| `--output DIR` / `-o DIR` | Output directory (default: `./output/<timestamp>/`) |
 
-| Source | Description | Use Case |
-|---|---|---|
-| `duckduckgo` | General web search | General queries |
-| `github` | GitHub repositories | Code, projects |
-| `semantic_scholar` | Academic papers | Research |
-| `gnews` | Google News | News articles |
-| `reddit` | Reddit discussions | Community opinions |
-| `hackernews` | Hacker News | Tech news |
-
-## Document Processing
-
-### Processing PDFs
+**Example:**
 
 ```bash
-# Extract from a PDF
-webis extract ./report.pdf --task "Extract financial summary and key metrics"
+webis run "Recent developments in quantum computing" --limit 10
 ```
 
-### Processing Multiple Files
+**Pipeline Phases:**
+
+| Phase | What Happens |
+|-------|-------------|
+| Phase 1 | Intelligent crawl — CrawlerAgent + ValidationAgent loop |
+| Phase 2 | Document processing — PDF parsing, document parsing |
+| Phase 3 | LLM extraction — Structured data extraction via LLM |
+| Phase 4 | RAG knowledge base — Embeddings + vector store |
+
+### `webis html-report` — Generate HTML Report
 
 ```bash
-# Batch processing
-webis batch process ./documents/ --task "Extract entities"
+webis html-report <RAG_STORE> [--output DIR] [--query TEXT]
 ```
 
-### Custom Schema
+| Argument | Description |
+|----------|-------------|
+| `RAG_STORE` | Path to `rag_store.json` (positional, required) |
+| `--output DIR` / `-o DIR` | Output directory |
+| `--query TEXT` | Report focus query |
 
-Create a schema file `schema.json`:
-
-```json
-{
-  "type": "object",
-  "properties": {
-    "title": {"type": "string"},
-    "author": {"type": "string"},
-    "date": {"type": "string"},
-    "summary": {"type": "string"},
-    "key_findings": {
-      "type": "array",
-      "items": {"type": "string"}
-    }
-  }
-}
-```
-
-Use the schema:
+**Example:**
 
 ```bash
-webis extract ./paper.pdf \
-  --schema ./schema.json \
-  --output result.json
+webis html-report ./output/20260226_030717/rag_store.json \
+  --query "AI breakthroughs in 2026"
 ```
 
-## Knowledge Base Building
-
-### Basic RAG Setup
+### `webis markdown-report` — Generate Markdown Report
 
 ```bash
-webis run "AI research papers" \
-  --rag-mode \
-  --limit 10
+webis markdown-report <RAG_STORE> [--query TEXT]
 ```
 
-### Advanced RAG Configuration
+Uses a two-stage LLM synthesis to produce a Markdown report.
+
+### `webis extract` — Extract from Local Files
 
 ```bash
-webis run "Recent ML tutorials" \
-  --rag-mode \
-  --chunk-size 1000 \
-  --chunk-overlap 200 \
-  --embed-model all-MiniLM-L6-v2
+webis extract <FILES...> [--task TEXT] [--schema PATH] [--output DIR]
 ```
 
-### Custom Embedding Model
+| Argument | Description |
+|----------|-------------|
+| `FILES` | One or more file paths (positional) |
+| `--task TEXT` | Extraction goal (default: "Extract main information") |
+| `--schema PATH` | JSON schema file for structured output |
+| `--output DIR` / `-o DIR` | Output directory |
+
+**Example:**
 
 ```bash
-# Use a different embedding model
-webis run "NLP research" \
-  --rag-mode \
-  --embed-model sentence-transformers/all-mpnet-base-v2
+webis extract report.pdf paper.pdf \
+  --task "Extract key findings and conclusions" \
+  --schema schema.json
 ```
 
-## Web Interface
-
-### Starting the Visualizer
+### `webis visualizer` — Launch Web UI
 
 ```bash
 webis visualizer
 ```
 
-Access at: `http://localhost:8501`
+Opens the Streamlit-based dashboard at `http://localhost:8501`.
 
-### Main Features
+## Intelligent Pipeline
 
-#### Data Sources Panel
-- Add web crawling tasks
-- Upload local files
-- Configure data sources
-- View source status
+The core of Webis v2 is the **Intelligent Pipeline** — an agent-driven
+crawl-clean-validate loop.
 
-#### Pipeline Dashboard
-- Real-time progress tracking
-- Pipeline visualization
-- Step-by-step execution view
-- Performance metrics
+### Architecture
 
-#### Results Panel
-- Multiple view modes (table, JSON, raw)
-- Export options (CSV, JSON, Excel, Markdown)
-- Statistical summaries
-- Data filtering and sorting
-
-#### AI Assistant
-- Natural language queries
-- Source-referenced answers
-- Context-aware responses
-- Quick analysis prompts
-
-### Interface Navigation
-
-| Feature | Access Method | Purpose |
-|---|---|---|
-| Add Data | Left sidebar | Add new data sources |
-| Pipeline | Main tab | View and manage pipelines |
-| Results | Results tab | View and export processed data |
-| AI Assistant | AI tab | Query your knowledge base |
-
-## Advanced Features
-
-### Custom Pipeline Configuration
-
-Create a pipeline configuration file `pipeline.yaml`:
-
-```yaml
-pipeline:
-  sources:
-    - name: duckduckgo
-      config:
-        max_results: 10
-
-  processors:
-    - name: html_cleaner
-    - name: deduplicator
-
-  extractors:
-    - name: llm_extractor
-      config:
-        model: gpt-4
+```
+┌─────────────────────────────────────────┐
+│           IntelligentPipeline           │
+│                                         │
+│   ┌──────────┐     ┌───────────────┐   │
+│   │ Crawler   │────▶│ HTML Cleaner  │   │
+│   │ Agent     │     │ + Fetcher     │   │
+│   └──────────┘     └──────┬────────┘   │
+│        ▲                   │            │
+│        │           ┌───────▼────────┐   │
+│        │           │ Validation     │   │
+│        └───────────│ Agent          │   │
+│    (next iteration)└────────────────┘   │
+│                                         │
+│   Parameters:                           │
+│   • min_count (target doc count)        │
+│   • relevance_threshold (default: 0.7)  │
+│   • max_iterations (default: 3)         │
+└─────────────────────────────────────────┘
 ```
 
-Run the custom pipeline:
+### CrawlerAgent
+
+- Uses the LLM to select optimal search plugins for the task
+- Supports 11 registered search sources (see [Search Source Plugins](#search-source-plugins))
+- Automatic **query variation** across iterations to broaden coverage
+- URL-based deduplication via `exclude_urls`
+
+### ValidationAgent
+
+- LLM-scored relevance per document (0.0–1.0)
+- Documents scoring ≥ `relevance_threshold` are accepted
+- Tracks `AgentState` with `seen_urls` to prevent re-processing
+
+### Auto-Fetch for Snippets
+
+If a search result only returns a snippet (< 500 characters), the pipeline
+automatically fetches the full page via `HtmlFetcherPlugin` before cleaning.
+
+## HTML Report Generation
+
+The `webis html-report` command runs a **3-Agent Pipeline**:
+
+### Agent 1: RAG Retrieval Agent
+
+- Loads documents from `rag_store.json`
+- Ranks by keyword overlap relevance
+- Calls LLM to generate a structured **analysis pack**:
+  - `report_title` — topic-specific, engaging
+  - `executive_summary` — 2–3 sentence narrative
+  - `kpis` — domain-specific KPIs (not generic)
+  - `insights` — ≥ 4 findings with varying confidence levels
+  - `patterns`, `actions`, `risks`
+  - `evidence_matrix` with source references
+  - `methodology`
+
+### Agent 2: Template Design Agent
+
+- Receives the analysis pack
+- Calls LLM to design a **topic-adaptive CSS theme**:
+  - Tech topics → dark glassmorphism
+  - Business topics → corporate navy + gold
+  - Science topics → clean teal/academic
+  - News topics → newspaper-style serif
+  - Health topics → calming blue/green
+- Generates a **presentation pack** (layout cards, KPI cards, insight cards)
+
+### Agent 3: Report Assembly Agent
+
+- **Hybrid approach**: LLM generates creative `<body>` section HTML
+  (`max_tokens=8000`, `temperature=0.7`), wrapped in a deterministic
+  HTML5 skeleton for reliability
+- If LLM generation fails, a guaranteed deterministic renderer kicks in
+- Post-processing: HTML sanitization, validation, and auto-repair
+
+### Output
+
+A single standalone HTML5 file with:
+- Embedded CSS (no external dependencies)
+- Responsive layout
+- Topic-adapted visual design
+- All data from the RAG knowledge base
+
+## Document Extraction
 
 ```bash
-webis run --config ./pipeline.yaml "Your query here"
+webis extract document.pdf --task "Extract financial metrics"
 ```
 
-### Batch Operations
+**Supported formats:** PDF, DOCX, HTML, Markdown, plain text.
+
+**Pipeline:**
+1. `PDFPlugin` / `DocumentParsePlugin` — parse the file
+2. `LLMExtractorPlugin` — LLM-based structured extraction
+3. Output to JSON with optional schema validation
+
+**Custom schema example** (`schema.json`):
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "title": { "type": "string" },
+    "author": { "type": "string" },
+    "key_findings": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  }
+}
+```
+
+## RAG Knowledge Base
+
+Every `webis run` with sufficient documents builds a RAG knowledge base:
+
+- **Embedding model**: `sentence-transformers/all-MiniLM-L6-v2` (cached locally, works offline)
+- **Storage**: `rag_store.json` — contains document content + metadata keyed by URL
+- **Usage**: Feeds into `html-report` and `markdown-report` commands
+
+Environment variables for offline mode (auto-set by the pipeline):
+
+```env
+HF_HUB_OFFLINE=1
+TRANSFORMERS_OFFLINE=1
+```
+
+## Web Interface (Visualizer)
 
 ```bash
-# Process multiple queries
-webis batch run queries.txt --output ./results/
-
-# Process multiple files
-webis batch extract ./documents/ --task "Extract summaries"
+webis visualizer
 ```
 
-### API Integration
+The Streamlit-based dashboard provides:
 
-```python
-from webis import WebisClient
+| Panel | Features |
+|-------|----------|
+| **Task Input** | Natural language query, parameter configuration |
+| **Pipeline Dashboard** | Real-time progress, iteration tracking |
+| **Results** | Document browser, export (JSON, CSV, Markdown) |
+| **AI Assistant** | RAG-powered Q&A over collected documents |
+| **Report Generator** | One-click HTML report generation |
 
-client = WebisClient(api_key="your_api_key")
+## LLM Configuration
 
-# Run a pipeline
-result = client.run(
-    query="Latest AI news",
-    sources=["duckduckgo"],
-    limit=5
-)
+### Supported Models
 
-# Get results
-print(result.data)
+| Key | Model | Provider | Context | Notes |
+|-----|-------|----------|---------|-------|
+| `deepseek-v3.2` | `deepseek-chat` | DeepSeek | 64K | JSON mode, default primary |
+| `deepseek-r1` | `deepseek-reasoner` | DeepSeek | 64K | Reasoning model |
+| `qwen-coder-32b` | `Qwen/Qwen2.5-Coder-32B-Instruct` | SiliconFlow | 32K | JSON mode |
+| `gpt-4o` | `gpt-4o` | OpenAI | 128K | JSON mode + Vision |
+| `gpt-4o-mini` | `gpt-4o-mini` | OpenAI | 128K | JSON mode |
+| `claude-sonnet` | `claude-sonnet-4-20250514` | Anthropic | 200K | Vision |
+
+### Model Selection
+
+1. Set `WEBIS_LLM_MODEL` in `.env` to choose a specific primary model
+2. Or let Webis auto-select based on available API keys and model capabilities
+3. Free fallback: `Qwen/Qwen2.5-7B-Instruct` via SiliconFlow
+
+### Fallback Chain
+
+The `LLMRouter` automatically retries with fallback models if the primary fails:
+
 ```
+Primary Model → Fallback 1 → Fallback 2 → Free Tier (Qwen 7B)
+```
+
+Built-in response caching (SHA256-keyed, up to 1000 entries) avoids redundant calls.
+
+### Custom Model Endpoint
+
+```env
+CUSTOM_API_KEY=your_key
+CUSTOM_MODEL_NAME=your-model
+CUSTOM_BASE_URL=https://your-endpoint/v1
+```
+
+## Search Source Plugins
+
+### Auto-Registered Sources (10)
+
+| Plugin Name | API Key Env Var | Description |
+|-------------|----------------|-------------|
+| `tavily_search` | `TAVILY_API_KEY` | Tavily AI-optimized search |
+| `bocha_search` | `BOCHA_API_KEY` | Bocha search API |
+| `exa_firecrawl_crawler` | `EXA_API_KEY` | Exa + Firecrawl search/crawl |
+| `serper_search` | `SERPER_API_KEY` | Serper Google search |
+| `serpapi` | `SERPAPI_API_KEY` | SerpAPI Google search |
+| `bright_data` | `BRIGHTDATA_API_TOKEN` | Bright Data scraping |
+| `github` | `GITHUB_TOKEN` | GitHub repositories |
+| `gnews` | `GNEWS_API_KEY` | Google News |
+| `hackernews` | *(none needed)* | Hacker News stories |
+| `semantic_scholar` | *(none needed)* | Academic papers |
+
+### How Source Selection Works
+
+The **CrawlerAgent** uses the LLM to pick the best sources for each task:
+
+1. Evaluates which plugins have valid API keys
+2. LLM ranks sources by relevance to the query
+3. Falls back to other enabled search providers if one source fails
+4. Query is automatically varied across iterations
 
 ## Troubleshooting
 
-### Common Issues
+### SSL / Network Errors
 
-#### Issue: API Keys Not Found
+Webis includes resilient TLS handling with automatic retries:
 
-**Error**: `APIKeyNotFoundError`
-
-**Solution**:
 ```bash
-# Check .env file
-cat .env
-
-# Verify keys are set
-print($env:OPENAI_API_KEY)
-```
-
-#### Issue: Model Download Failed
-
-**Error**: `ModelDownloadError`
-
-**Solution**:
-```bash
-# Set HuggingFace mirror (for China)
+# If you see SSL certificate errors, they are auto-handled.
+# For HuggingFace model downloads behind a firewall:
 export HF_ENDPOINT=https://hf-mirror.com
-export HF_HUB_DOWNLOAD_TIMEOUT=120
-
-# Download model manually
-hf download sentence-transformers/all-MiniLM-L6-v2
 ```
 
-#### Issue: Memory Error
+### Embedding Model Download Issues
 
-**Error**: `MemoryError` during processing
+The pipeline auto-sets `HF_HUB_OFFLINE=1` and retries with cached models.
+Pre-download the model:
 
-**Solution**:
 ```bash
-# Process smaller batches
-webis run "Your query" --limit 5 --batch-size 2
-
-# Use smaller chunk size
-webis run "Your query" --rag-mode --chunk-size 500
+python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
 ```
 
-### Getting Help
+### Pipeline Returns 0 Documents
 
-- 📖 [Documentation](https://narwhal-lab.github.io/webis)
-- 🐛 [Report a Bug](https://github.com/Narwhal-Lab/Webis/issues)
-- 💬 [Discussions](https://github.com/Narwhal-Lab/Webis/discussions)
-- 📧 [Email Support](mailto:contact@webis.dev)
+- Check that at least one search API key is configured
+- Lower `--limit` to start with fewer documents
 
-## Best Practices
+### HTML Report Hangs
 
-1. **Start Small**
-   - Begin with small datasets
-   - Test with 2-3 sources
-   - Gradually increase complexity
+- The 3-agent pipeline makes 3–4 LLM calls; allow 1–2 minutes
+- Check LLM API key validity
+- If the primary model is down, the fallback chain will be tried
 
-2. **Use RAG for Large Datasets**
-   - Enable RAG mode for better search
-   - Choose appropriate chunk sizes
-   - Test different embedding models
+### Common Environment Variables
 
-3. **Monitor Performance**
-   - Check pipeline status regularly
-   - Review performance metrics
-   - Optimize based on results
+```env
+# Force a specific LLM
+WEBIS_LLM_MODEL=deepseek-v3.2
 
-4. **Save Configuration**
-   - Create reusable pipeline configs
-   - Document custom schemas
-   - Keep track of working parameters
+# Debug logging
+LOG_LEVEL=DEBUG
+DEBUG=true
+
+# Offline mode for embeddings
+HF_HUB_OFFLINE=1
+TRANSFORMERS_OFFLINE=1
+```
 
 ---
 
-Ready for more? Check out:
-- [API Reference](api.md) - Complete API documentation
-- [Plugin Development](plugins.md) - Create custom plugins
-- [Deployment Guide](deployment.md) - Production setup
+## Next Steps
+
+- [API Reference](api.md) — Core classes and CLI reference
+- [Plugin Development](plugins.md) — Create custom plugins
+- [Deployment Guide](deployment.md) — Production setup
+- [Docker Usage](docker-usage.md) — Container-based deployment

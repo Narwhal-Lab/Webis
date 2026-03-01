@@ -10,7 +10,7 @@ import os
 sys.path.append(os.path.join(os.path.dirname(__file__), "../src"))
 
 from webis.core.pipeline import Pipeline
-from webis.plugins.sources import DuckDuckGoPlugin
+from webis.plugins.sources import TavilySearchPlugin
 from webis.plugins.processors import HtmlFetcherPlugin, HtmlCleanerPlugin
 
 # Configure logging
@@ -21,10 +21,9 @@ def main():
     pipeline = Pipeline()
     
     # 2. Register and Add Source
-    # Using DuckDuckGo as it doesn't require an API key by default
-    ddg_plugin = DuckDuckGoPlugin(config={"max_results": 3})
-    pipeline.registry.register(ddg_plugin)
-    pipeline.add_source(ddg_plugin.name)
+    search_plugin = TavilySearchPlugin(config={"max_results": 3})
+    pipeline.registry.register(search_plugin)
+    pipeline.add_source(search_plugin.name)
     
     # 3. Register and Add Processors
     fetcher = HtmlFetcherPlugin()
